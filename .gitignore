@@ -2,7 +2,8 @@
 venv/
 .venv/
 env/
-.env/
+.env
+**/.env
 
 # Personal Notes
 neon_guide.md
