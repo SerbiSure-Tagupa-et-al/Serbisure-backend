@@ -7,3 +7,6 @@ env/
 
 # Personal Notes
 neon_guide.md
+
+__pycache__/
+*.pyc
