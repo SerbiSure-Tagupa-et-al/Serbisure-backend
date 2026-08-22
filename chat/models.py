@@ -2,6 +2,7 @@ from django.db import models
 from django.conf import settings
 from cryptography.fernet import Fernet, InvalidToken
 from django.db.models import CheckConstraint, Q, F
+from django.db.models.expressions import RawSQL
 import base64
 import hashlib
 import uuid
@@ -88,5 +89,11 @@ class tbl_chat_message(models.Model):
             CheckConstraint(
                 condition=~Q(sender_id=F('receiver_id')),
                 name='sender_cannot_be_receiver'
+            ),
+
+            CheckConstraint(
+                condition=RawSQL("length(trim(message_payload)) > 0", [], 
+                output_field=models.BooleanField()),
+                name='message_payload_not_empty_or_whitespace'
             )
         ]
