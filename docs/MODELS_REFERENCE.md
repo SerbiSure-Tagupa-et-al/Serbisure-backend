@@ -125,6 +125,9 @@ This document outlines the database schema, models, field types, and choices (en
 | `chat_message_id` | `UUIDField` | Primary Key, Unique |
 | `sender_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `receiver_id` | `ForeignKey` | FK -> `tbl_user_profile` |
-| `message_payload` | `TextField` | - |
+| `booking_id` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_booking` |
+| `message_payload` | `EncryptedTextField` | - |
+| `is_read` | `BooleanField` | - |
+| `is_deleted` | `BooleanField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |
 
