@@ -97,9 +97,10 @@ This document outlines the database schema, models, field types, and choices (en
 | `booking_id` | `ForeignKey` | FK -> `tbl_booking` |
 | `reviewer_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `reviewee_id` | `ForeignKey` | FK -> `tbl_user_profile` |
-| `unstructured_feedback` | `TextField` | Null=True, Blank=True |
-| `nlp_sentiment` | `CharField` | Null=True, Blank=True |
-| `review_direction` | `CharField` | - |
+| `unstructured_feedback` | `TextField` | - |
+| `nlp_sentiment` | `CharField` | Choices: ['Positive', 'Neutral', 'Negative'] |
+| `rating` | `IntegerField` | - |
+| `createdAt` | `DateTimeField` | Blank=True |
 
 ## Notifications App
 

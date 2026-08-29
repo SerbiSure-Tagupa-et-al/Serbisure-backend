@@ -154,6 +154,20 @@ REST_FRAMEWORK = {
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    'DEFAULT_THROTTLE_RATES': {
+        # Reviews
+        'review_create': '30/d',
+        'review_list': '120/m',
+        # Chat
+        'chat_send': '60/m',
+        'chat_messages': '120/m',
+        'chat_inbox': '60/m',
+        'chat_read': '60/m',
+        # Accounts
+        'profile_image_upload': '2/h',
+        'user_about': '3/h',
+        'user_tags': '3/h',
+    }
 }
 
 # JWT Token Rules
