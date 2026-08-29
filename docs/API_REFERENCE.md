@@ -131,3 +131,68 @@ Creates a new job posting or service booking. Both Kasambahays and Homeowners ca
   - *Solution:* Ensure both `start_time` and `end_time` are future dates.
 - **400 Bad Request (Invalid Logic):**
   - *Response:* `{ "end_time": ["End time must be strictly after the start time."] }`
+
+---
+
+## 4. Reviews & Ratings
+
+### `POST /api/v1/reviews/create/`
+Submits a rating and feedback review for a completed booking. Reviewer must be a verified participant (poster or accepter) of the booking. Automatically derives the reviewee.
+
+- **Authentication:** `Required (JWT Access Token)`
+- **Required User State:** User's `verification_status` MUST be `"Verified"`.
+- **Required Headers:**
+  - `Authorization`: `Bearer <your_access_token>`
+  - `Idempotency-Key`: `string (UUID v4)` (Required to prevent duplicate reviews)
+
+**✅ Valid Payload (201 Created):**
+```json
+{
+    "booking_id": "c1f7b0f6-9f87-4b71-93c6-6b215e9e0321",
+    "rating": 5,
+    "unstructured_feedback": "Excellent service! Very prompt and thorough cleaning.",
+    "nlp_sentiment": "Positive"
+}
+```
+
+**❌ Common Errors:**
+- **403 Forbidden (Unverified User):**
+  - *Response:* `{ "detail": "Only verified users can submit reviews." }`
+- **400 Bad Request (Booking Not Completed):**
+  - *Response:* `{ "booking_id": ["You can only submit a review for bookings that are marked as 'Completed'."] }`
+- **400 Bad Request (Not a Participant):**
+  - *Response:* `{ "detail": "You are not an authorized participant (poster or accepter) of this booking." }`
+- **400 Bad Request (Duplicate Review):**
+  - *Response:* `{ "detail": "You have already submitted a review for this booking." }`
+
+---
+
+### `GET /api/v1/reviews/received/`
+Retrieves all reviews received by the authenticated user.
+
+- **Authentication:** `Required (JWT Access Token)`
+- **Headers:** `Authorization: Bearer <your_access_token>`
+
+---
+
+### `GET /api/v1/reviews/given/`
+Retrieves all reviews submitted by the authenticated user.
+
+- **Authentication:** `Required (JWT Access Token)`
+- **Headers:** `Authorization: Bearer <your_access_token>`
+
+---
+
+### `GET /api/v1/reviews/summary/<uuid:user_id>/`
+Returns aggregated review statistics for a target user (average rating, count, rating breakdown, sentiment distribution).
+
+- **Authentication:** `Required (JWT Access Token)`
+- **Headers:** `Authorization: Bearer <your_access_token>`
+
+---
+
+### `GET /api/v1/reviews/user/<uuid:user_id>/`
+Retrieves the public list of reviews received by a target user.
+
+- **Authentication:** `Required (JWT Access Token)`
+- **Headers:** `Authorization: Bearer <your_access_token>`
