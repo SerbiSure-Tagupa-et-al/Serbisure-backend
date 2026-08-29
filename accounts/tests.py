@@ -559,13 +559,29 @@ class TestUserAPIEndpoints(TestCase):
     def test_user_about_unauthenticated_request_returns_401(self):
         """
         GIVEN  no Authorization header (not logged in)
-        WHEN   PATCH /user-about/
+        WHEN   PATCH or GET /user-about/
         THEN   401 Unauthorized.
 
         IsAuthenticated permission guard must be enforced.
         """
-        response = self.client.patch(self.about_url, {"user_about": "Hello!"})
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        response_patch = self.client.patch(self.about_url, {"user_about": "Hello!"})
+        self.assertEqual(response_patch.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        response_get = self.client.get(self.about_url)
+        self.assertEqual(response_get.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_user_about_authenticated_get_succeeds(self):
+        """
+        GIVEN  an authenticated user
+        WHEN   GET /user-about/
+        THEN   200 OK and returns current user_about.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.get(self.about_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data.get("user_about"), "No Bio")
 
     def test_user_about_authenticated_update_succeeds(self):
         """
