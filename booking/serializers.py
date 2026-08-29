@@ -32,18 +32,24 @@ class BookingFeedSerializer(serializers.ModelSerializer):
 
     profile_link = serializers.SerializerMethodField()
     name = serializers.SerializerMethodField()
+    poster_account_type = serializers.SerializerMethodField()
 
     class Meta:
         model = tbl_booking
 
         fields = [
             'booking_id',
+            'poster_id',
+            'poster_account_type',
             'profile_link',
             'name',
             'service_address',
             'service_category',
             'daily_rate'
         ]
+
+    def get_poster_account_type(self, obj):
+        return getattr(obj.poster_id, 'account_type', 'User')
 
     
     def get_name(self, obj):
