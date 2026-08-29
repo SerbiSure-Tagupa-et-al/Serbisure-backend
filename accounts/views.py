@@ -193,10 +193,14 @@ class UserAboutThrottle(UserRateThrottle):
     scope = 'user_about'
     rate = '3/h'
 
-class UserAboutView(generics.UpdateAPIView):
+class UserAboutView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = UserAboutSerializer
-    throttle_classes = [UserAboutThrottle]
+
+    def get_throttles(self):
+        if self.request.method in ['PATCH', 'PUT']:
+            return [UserAboutThrottle()]
+        return []
 
     def get_object(self):
         return self.request.user
