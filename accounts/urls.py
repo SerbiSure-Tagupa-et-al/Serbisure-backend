@@ -7,6 +7,7 @@ from .views import (
     UserAboutView,
     UserTagsView,
     PublicProfileView,
+    KasambahayResumeView,
 )
 
 
@@ -29,6 +30,9 @@ urlpatterns = [
 
     # Public Profile Endpoint
     path('public-profile/<uuid:id>/', PublicProfileView.as_view(), name='public-profile'),
+
+    # Kasambahay Resume Endpoint
+    path('resume/', KasambahayResumeView.as_view(), name='kasambahay-resume'),
 
     # Refresh Endpoints (Used when the access token expires to get a new one)
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh')

@@ -167,6 +167,7 @@ REST_FRAMEWORK = {
         'profile_image_upload': '2/h',
         'user_about': '3/h',
         'user_tags': '3/h',
+        'resume_upload': '5/d',
     }
 }
 

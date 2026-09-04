@@ -270,9 +270,91 @@ class UserTagsSerializer(serializers.ModelSerializer):
         fields = ['user_tags']
 
 
+class KasambahayResumeSerializer(serializers.ModelSerializer):
+    resume_pdf = serializers.FileField(
+        write_only=True,
+        required=False
+    )
+    resume_url = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = tbl_user_profile
+        fields = ['resume_pdf', 'resume_url', 'resume_uploaded_at']
+        read_only_fields = ['resume_url', 'resume_uploaded_at']
+
+    def validate_resume_pdf(self, value):
+        if not value:
+            raise serializers.ValidationError("A PDF file is required.")
+
+        name = getattr(value, 'name', '')
+        if not name.lower().endswith('.pdf'):
+            raise serializers.ValidationError("Only PDF files are accepted.")
+
+        max_size = 10 * 1024 * 1024
+        if value.size > max_size:
+            raise serializers.ValidationError("Resume file must be under 10MB.")
+
+        return value
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if request and request.method in ['PATCH', 'PUT', 'POST']:
+            if 'resume_pdf' not in attrs:
+                raise serializers.ValidationError({"resume_pdf": "Please provide a PDF file."})
+        return attrs
+
+    def get_resume_url(self, obj):
+        if not obj.resume_url:
+            return None
+        import cloudinary.utils
+        try:
+            # Backward compatibility: previously uploaded raw files end with .pdf in public_id
+            if obj.resume_url.endswith('.pdf'):
+                temporary_url, _ = cloudinary.utils.cloudinary_url(
+                    obj.resume_url,
+                    resource_type="raw",
+                    type="authenticated",
+                    sign_url=True,
+                )
+            else:
+                temporary_url, _ = cloudinary.utils.cloudinary_url(
+                    obj.resume_url,
+                    resource_type="image",
+                    format="pdf",
+                    type="authenticated",
+                    sign_url=True,
+                )
+            return temporary_url
+        except Exception:
+            return None
+
+    def update(self, instance, validated_data):
+        from django.utils import timezone
+        import cloudinary.uploader
+
+        pdf_file = validated_data.pop('resume_pdf', None)
+        if pdf_file:
+            upload_result = cloudinary.uploader.upload(
+                pdf_file,
+                folder="serbisure_resumes/",
+                resource_type="image",
+                format="pdf",
+                type="authenticated",
+                use_filename=True,
+                unique_filename=True
+            )
+            public_id = upload_result.get('public_id')
+            instance.resume_url = public_id
+            instance.resume_uploaded_at = timezone.now()
+            instance.save(update_fields=['resume_url', 'resume_uploaded_at'])
+
+        return instance
+
+
 class PublicProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     profile_link = serializers.SerializerMethodField()
+    resume_url = serializers.SerializerMethodField()
 
     class Meta:
         model = tbl_user_profile
@@ -284,6 +366,7 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             'account_type',
             'verification_status',
             'profile_link',
+            'resume_url',
             'user_about',
             'user_tags',
             'city',
@@ -306,6 +389,30 @@ class PublicProfileSerializer(serializers.ModelSerializer):
                 type="authenticated",
                 sign_url=True,
             )
+            return temporary_url
+        except Exception:
+            return None
+
+    def get_resume_url(self, obj):
+        if not obj.resume_url or obj.account_type != 'Kasambahay':
+            return None
+        import cloudinary.utils
+        try:
+            if obj.resume_url.endswith('.pdf'):
+                temporary_url, _ = cloudinary.utils.cloudinary_url(
+                    obj.resume_url,
+                    resource_type="raw",
+                    type="authenticated",
+                    sign_url=True,
+                )
+            else:
+                temporary_url, _ = cloudinary.utils.cloudinary_url(
+                    obj.resume_url,
+                    resource_type="image",
+                    format="pdf",
+                    type="authenticated",
+                    sign_url=True,
+                )
             return temporary_url
         except Exception:
             return None
