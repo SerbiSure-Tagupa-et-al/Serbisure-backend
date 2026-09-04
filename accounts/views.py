@@ -1,7 +1,14 @@
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .serializers import UserRegistrationSerializer, CustomLoginSerializer, UserAboutSerializer, UserTagsSerializer
+from .models import tbl_user_profile
+from .serializers import (
+    UserRegistrationSerializer,
+    CustomLoginSerializer,
+    UserAboutSerializer,
+    UserTagsSerializer,
+    PublicProfileSerializer,
+)
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.exceptions import Throttled
@@ -239,3 +246,15 @@ class UserTagsView(generics.UpdateAPIView):
             custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
 
         raise Throttled(detail=custom_message)
+
+
+class PublicProfileView(generics.RetrieveAPIView):
+    """
+    Read-only public profile for any user by UUID.
+    Only accessible by authenticated users.
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = PublicProfileSerializer
+    lookup_field = 'id'
+    queryset = tbl_user_profile.objects.filter(is_active=True)
+
