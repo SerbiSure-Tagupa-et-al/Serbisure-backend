@@ -188,6 +188,19 @@ class tbl_user_profile(AbstractUser):
         null=True
     )
 
+    resume_url = models.CharField(
+        max_length=500,
+        blank=True,
+        null=True,
+        help_text="Cloudinary public_id of the uploaded PDF resume"
+    )
+
+    resume_uploaded_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="Timestamp of the last resume upload"
+    )
+
     # Custome ENUM fields using the choices we defined above
 
     account_type = models.CharField(
