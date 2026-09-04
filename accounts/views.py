@@ -8,7 +8,9 @@ from .serializers import (
     UserAboutSerializer,
     UserTagsSerializer,
     PublicProfileSerializer,
+    KasambahayResumeSerializer,
 )
+from .permissions import IsKasambahay
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.exceptions import Throttled
@@ -257,4 +259,68 @@ class PublicProfileView(generics.RetrieveAPIView):
     serializer_class = PublicProfileSerializer
     lookup_field = 'id'
     queryset = tbl_user_profile.objects.filter(is_active=True)
+
+
+class ResumeUploadThrottle(UserRateThrottle):
+    scope = 'resume_upload'
+    rate = '5/d'
+
+
+class KasambahayResumeView(generics.RetrieveUpdateAPIView):
+    """
+    Endpoint for Kasambahay users to retrieve (GET) and upload/update (PATCH, POST) their PDF resume.
+    - Only Kasambahay accounts are authorized (403 for others).
+    - Rate-limited to 5 uploads per day on write operations (GET is unthrottled).
+    - Supports Idempotency-Key header on write operations.
+    """
+    permission_classes = [IsAuthenticated, IsKasambahay]
+    parser_classes = (MultiPartParser, FormParser)
+    serializer_class = KasambahayResumeSerializer
+
+    def get_throttles(self):
+        if self.request.method in ['PATCH', 'PUT', 'POST']:
+            return [ResumeUploadThrottle()]
+        return []
+
+    def get_object(self):
+        return self.request.user
+
+    def post(self, request, *args, **kwargs):
+        return self.patch(request, *args, **kwargs)
+
+    def patch(self, request, *args, **kwargs):
+        idempotency_key = request.headers.get('Idempotency-Key')
+        cache_key = None
+        if idempotency_key:
+            if not check_valid_uuid(idempotency_key):
+                return Response(
+                    {"details": "The Idempotency-Key header must be a valid UUID v4."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            cache_key = f"resume_idemp_{request.user.id}_{idempotency_key}"
+            cached = cache.get(cache_key)
+            if cached:
+                return Response(cached['data'], status=cached['status'])
+
+        response = super().patch(request, *args, **kwargs)
+
+        if cache_key and response.status_code == status.HTTP_200_OK:
+            cache.set(
+                cache_key,
+                {'data': response.data, 'status': response.status_code},
+                timeout=86400
+            )
+
+        return response
+
+    def throttled(self, request, wait):        
+        # 3600 seconds = 1 hour
+        if wait > 3600: 
+            time_left = math.ceil(wait / 3600)
+            custom_message = f"Too many attempts. Please try again in {time_left} hours."
+        else:
+            custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
+
+        raise Throttled(detail=custom_message)
+
 
