@@ -268,3 +268,44 @@ class UserTagsSerializer(serializers.ModelSerializer):
     class Meta:
         model = tbl_user_profile
         fields = ['user_tags']
+
+
+class PublicProfileSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+    profile_link = serializers.SerializerMethodField()
+
+    class Meta:
+        model = tbl_user_profile
+        fields = [
+            'id',
+            'first_name',
+            'last_name',
+            'full_name',
+            'account_type',
+            'verification_status',
+            'profile_link',
+            'user_about',
+            'user_tags',
+            'city',
+            'province',
+            'date_joined',
+        ]
+        read_only_fields = fields
+
+    def get_full_name(self, obj):
+        parts = [obj.first_name, obj.middle_name, obj.last_name]
+        return ' '.join(p for p in parts if p).strip()
+
+    def get_profile_link(self, obj):
+        if not obj.profile_link:
+            return None
+        import cloudinary.utils
+        try:
+            temporary_url, _ = cloudinary.utils.cloudinary_url(
+                obj.profile_link,
+                type="authenticated",
+                sign_url=True,
+            )
+            return temporary_url
+        except Exception:
+            return None

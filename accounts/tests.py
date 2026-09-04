@@ -312,6 +312,7 @@ class TestUserAPIEndpoints(TestCase):
         self.login_url    = "/api/v1/accounts/login/"
         self.about_url    = "/api/v1/accounts/user-about/"
         self.tags_url     = "/api/v1/accounts/user-tags/"
+        self.public_profile_base = "/api/v1/accounts/public-profile/"
 
         # Reset throttle counters so tests don't bleed into each other
         cache.clear()
@@ -802,3 +803,91 @@ class TestUserAPIEndpoints(TestCase):
         # User B's tags must remain unchanged
         user_b.refresh_from_db()
         self.assertEqual(user_b.user_tags, original_tags)
+
+    # ── PUBLIC PROFILE TESTS ──────────────────────────────────────────────────
+
+    def test_public_profile_authenticated_success(self):
+        """
+        GIVEN  an authenticated user querying another user's public profile
+        WHEN   GET /api/v1/accounts/public-profile/<uuid>/
+        THEN   200 OK, returns full_name, account_type, verification_status,
+               user_about, user_tags, city, province, and date_joined.
+        """
+        viewer, viewer_token = self._create_and_login_user(email="viewer@example.com", username="viewer")
+        target = tbl_user_profile.objects.create_user(
+            username="targetuser",
+            email="target@example.com",
+            password="Password123!",
+            first_name="Kakashi",
+            last_name="Hatake",
+            contact_number="+639222222222",
+            account_type="Kasambahay",
+            city="Cagayan de Oro",
+            province="Misamis Oriental",
+            user_about="Experienced in cleaning and maintenance.",
+            user_tags=["Cleaning", "Reliable"]
+        )
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {viewer_token}")
+        response = self.client.get(f"{self.public_profile_base}{target.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data.get("full_name"), "Kakashi Hatake")
+        self.assertEqual(response.data.get("account_type"), "Kasambahay")
+        self.assertEqual(response.data.get("city"), "Cagayan de Oro")
+        self.assertEqual(response.data.get("province"), "Misamis Oriental")
+        self.assertEqual(response.data.get("user_about"), "Experienced in cleaning and maintenance.")
+        self.assertEqual(response.data.get("user_tags"), ["Cleaning", "Reliable"])
+        self.assertIn("date_joined", response.data)
+
+    def test_public_profile_unauthenticated_rejected(self):
+        """
+        GIVEN  an unauthenticated request
+        WHEN   GET /api/v1/accounts/public-profile/<uuid>/
+        THEN   401 Unauthorized.
+        """
+        target = tbl_user_profile.objects.create_user(
+            username="targetuser2",
+            email="target2@example.com",
+            password="Password123!",
+            contact_number="+639333333333"
+        )
+        response = self.client.get(f"{self.public_profile_base}{target.id}/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_public_profile_nonexistent_user_returns_404(self):
+        """
+        GIVEN  a random UUID that does not match any user
+        WHEN   GET /api/v1/accounts/public-profile/<random_uuid>/
+        THEN   404 Not Found.
+        """
+        viewer, viewer_token = self._create_and_login_user(email="viewer2@example.com", username="viewer2")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {viewer_token}")
+        response = self.client.get(f"{self.public_profile_base}{uuid.uuid4()}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_public_profile_does_not_leak_sensitive_fields(self):
+        """
+        GIVEN  a public profile request
+        WHEN   GET /api/v1/accounts/public-profile/<uuid>/
+        THEN   sensitive attributes (email, password, contact_number, is_staff, is_superuser)
+               are strictly excluded from the payload.
+        """
+        viewer, viewer_token = self._create_and_login_user(email="viewer3@example.com", username="viewer3")
+        target = tbl_user_profile.objects.create_user(
+            username="targetuser3",
+            email="private_email@example.com",
+            password="Password123!",
+            contact_number="+639444444444"
+        )
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {viewer_token}")
+        response = self.client.get(f"{self.public_profile_base}{target.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn("email", response.data)
+        self.assertNotIn("password", response.data)
+        self.assertNotIn("contact_number", response.data)
+        self.assertNotIn("is_staff", response.data)
+        self.assertNotIn("is_superuser", response.data)
+
