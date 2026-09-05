@@ -228,14 +228,31 @@ class VerificationWorkflowTests(APITestCase):
         self.assertEqual(doc.verification_status, "Verified")
         self.assertEqual(doc.verifyBy, self.barangay)
 
-        # Verify user profile is now Verified
+        # Kasambahay only has NBI clearance verified so far -> user status remains Pending (needs police clearance too)
+        self.kasambahay.refresh_from_db()
+        self.assertEqual(self.kasambahay.verification_status, "Pending")
+
+        # Now Kasambahay uploads police clearance and Barangay approves it
+        self.client.force_authenticate(user=self.kasambahay)
+        res2 = self.client.post(self.upload_url, {
+            "document_type": "police_clearance",
+            "document_image": self.generate_dummy_image(),
+        }, format="multipart")
+        police_doc_id = res2.data["document_id"]
+
+        self.client.force_authenticate(user=self.barangay)
+        action_url2 = reverse("admin-document-action", kwargs={"document_id": police_doc_id})
+        self.client.patch(action_url2, {"verification_status": "Verified"})
+
+        # Now that BOTH clearances are Verified, Kasambahay profile is automatically Verified!
         self.kasambahay.refresh_from_db()
         self.assertEqual(self.kasambahay.verification_status, "Verified")
 
-        # Verify notification was sent
+        # Verify congratulatory notification was sent
         notif = tbl_notification.objects.filter(receiver_id=self.kasambahay).order_by("-createdAt").first()
         self.assertIsNotNone(notif)
         self.assertIn("verified", notif.notification_message.lower())
+
 
 
 class GoogleVisionOcrUnitTests(APITestCase):
