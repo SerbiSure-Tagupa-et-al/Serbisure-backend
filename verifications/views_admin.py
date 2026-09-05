@@ -29,37 +29,24 @@ class IsAdminOrBarangay(BasePermission):
 
 def check_and_update_profile_verification(user):
     """
-    Checks if user meets requirements for account-level verification:
-    - Kasambahay: At least 1 verified clearance (nbi_clearance or police_clearance), with no active rejections.
-    - Homeowner: Both national_id_front AND national_id_back verified.
+    Checks if user is now fully verified according to their required documents:
+    - Kasambahay: BOTH nbi_clearance AND police_clearance verified.
+    - Homeowner: BOTH national_id_front AND national_id_back verified.
+    If verified, sends a congratulations notification if not already sent.
     """
-    user_docs = tbl_documents.objects.filter(user_profile=user)
-    verified_types = set(
-        user_docs.filter(verification_status='Verified').values_list('document_type', flat=True)
-    )
-
-    is_verified = False
-
-    if user.account_type == 'Kasambahay':
-        # Must have at least one clearance verified
-        if 'nbi_clearance' in verified_types or 'police_clearance' in verified_types:
-            # Also ensure no active rejected document is blocking
-            is_verified = True
-    elif user.account_type == 'Homeowner':
-        # Must have both front and back of national ID verified
-        if 'national_id_front' in verified_types and 'national_id_back' in verified_types:
-            is_verified = True
-
-    if is_verified and user.verification_status != 'Verified':
-        user.verification_status = 'Verified'
-        user.save(update_fields=['verification_status'])
-        logger.info(f"[Verification] User {user.email} marked as Verified!")
-        # Notify user of account verification
-        tbl_notification.objects.create(
-            sender_id=user,
+    if user.verification_status == 'Verified':
+        notif_exists = tbl_notification.objects.filter(
             receiver_id=user,
-            notification_message="Congratulations! Your SerbiSure profile is now fully VERIFIED! 🎉",
-        )
+            notification_message__icontains="fully VERIFIED"
+        ).exists()
+        if not notif_exists:
+            logger.info(f"[Verification] User {user.email} is now fully Verified!")
+            tbl_notification.objects.create(
+                sender_id=user,
+                receiver_id=user,
+                notification_message="Congratulations! Your SerbiSure profile is now fully VERIFIED! 🎉",
+            )
+
 
 
 class AdminDocumentListView(generics.ListAPIView):
@@ -159,12 +146,6 @@ class AdminDocumentActionView(APIView):
             document.verifyBy = request.user
             document.rejection_reason = rejection_reason
             document.save(update_fields=['verification_status', 'verifyBy', 'rejection_reason'])
-
-            # If user was previously verified, update status
-            user = document.user_profile
-            if user.verification_status == 'Verified':
-                user.verification_status = 'Rejected'
-                user.save(update_fields=['verification_status'])
 
             # Notify user
             tbl_notification.objects.create(
