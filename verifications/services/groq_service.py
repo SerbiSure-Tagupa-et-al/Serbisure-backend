@@ -99,23 +99,33 @@ def extract_structured_data_from_text(raw_text: str, document_type: str) -> dict
         "Extract all fields into a single JSON object."
     )
 
-    try:
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_tokens=600,
-            response_format={"type": "json_object"},
-        )
+    models_to_try = [
+        os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b"),
+        "openai/gpt-oss-120b",
+        "llama-3.3-70b-versatile",
+    ]
 
-        content = completion.choices[0].message.content
-        return json.loads(content)
-    except Exception as e:
-        logger.error(f"[GroqService] Error in text extraction: {e}")
-        return {}
+    for model_name in models_to_try:
+        try:
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=600,
+                response_format={"type": "json_object"},
+            )
+
+            content = completion.choices[0].message.content
+            return json.loads(content)
+        except Exception as e:
+            logger.warning(f"[GroqService] Attempt with model '{model_name}' failed: {e}")
+            continue
+
+    logger.error("[GroqService] All models failed in text extraction.")
+    return {}
 
 
 def extract_from_image_vision(image_bytes: bytes, document_type: str) -> tuple[str, dict]:
