@@ -11,6 +11,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     # but the API will never will accidentally send it back to the frontend
 
     password = serializers.CharField(write_only=True)
+    verification_status = serializers.CharField(read_only=True)
 
     class Meta: 
         model = tbl_user_profile
