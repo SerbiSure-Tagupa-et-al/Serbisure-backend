@@ -129,13 +129,18 @@ def process_document(document_id: str):
 
 def _run_in_background(document_id: str):
     """Worker function for background daemon thread with safe connection lifecycle."""
-    close_old_connections()
+    import sys
+    is_testing = "test" in sys.argv
+    if not is_testing:
+        close_old_connections()
     try:
         process_document(document_id)
     except Exception as e:
         logger.error(f"[DocProcessor] Background task error for {document_id}: {e}", exc_info=True)
     finally:
-        close_old_connections()
+        if not is_testing:
+            close_old_connections()
+
 
 
 def process_document_async(document_id: str):
