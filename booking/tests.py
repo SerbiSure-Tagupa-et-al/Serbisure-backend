@@ -50,8 +50,10 @@ class BookingTests(APITestCase):
     def get_valid_payload(self):
         return {
             "booking_type": "short_term",
-            "service_category": "Cleaning",
+            "service_category": ["Cleaning"],
             "service_address": "123 Test St",
+            "zip_code": "9000",
+            "daily_rate": "500.00",
             "special_instruction": "Please be careful with the vase.",
             "start_time": self.future_start.isoformat(),
             "end_time": self.future_end.isoformat()
@@ -162,3 +164,91 @@ class BookingTests(APITestCase):
         
         response = self.client.post(self.url, payload, format='json', **headers)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class BookingFeedFilterTests(APITestCase):
+
+    def setUp(self):
+        self.homeowner = User.objects.create_user(
+            email='homeowner_feed@test.com',
+            password='TestPassword123!',
+            username='homeowner_feed',
+            first_name='Maria',
+            last_name='Santos',
+            account_type='Homeowner',
+            verification_status='Verified'
+        )
+
+        self.kasambahay = User.objects.create_user(
+            email='kasambahay_feed@test.com',
+            password='TestPassword123!',
+            username='kasambahay_feed',
+            first_name='Ana',
+            last_name='Reyes',
+            account_type='Kasambahay',
+            verification_status='Verified'
+        )
+
+        self.feed_url = reverse('booking-feed')
+        now = timezone.now()
+
+        # Create bookings posted by Kasambahay (visible to Homeowner)
+        self.k_job1 = tbl_booking.objects.create(
+            poster_id=self.kasambahay,
+            booking_type='short_term',
+            booking_status='Pending',
+            service_category=['Cleaning'],
+            start_time=now + datetime.timedelta(days=1),
+            service_address='Barangay Carmen, Cagayan de Oro',
+            daily_rate=500.00
+        )
+
+        self.k_job2 = tbl_booking.objects.create(
+            poster_id=self.kasambahay,
+            booking_type='long_term',
+            booking_status='Pending',
+            service_category=['Cooking', 'Caregiver'],
+            start_time=now + datetime.timedelta(days=2),
+            service_address='Nazareth, Cagayan de Oro',
+            daily_rate=1200.00
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_feed_category_filter(self):
+        self.client.force_authenticate(user=self.homeowner)
+        res = self.client.get(f"{self.feed_url}?category=Cleaning")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.data[0]['booking_id'], str(self.k_job1.booking_id))
+
+    def test_feed_booking_type_filter(self):
+        self.client.force_authenticate(user=self.homeowner)
+        res = self.client.get(f"{self.feed_url}?booking_type=long_term")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.data[0]['booking_id'], str(self.k_job2.booking_id))
+
+    def test_feed_max_rate_filter(self):
+        self.client.force_authenticate(user=self.homeowner)
+        res = self.client.get(f"{self.feed_url}?max_rate=600")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.data[0]['booking_id'], str(self.k_job1.booking_id))
+
+    def test_feed_location_filter(self):
+        self.client.force_authenticate(user=self.homeowner)
+        res = self.client.get(f"{self.feed_url}?location=Nazareth")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.data[0]['booking_id'], str(self.k_job2.booking_id))
+
+    def test_feed_sort_rate(self):
+        self.client.force_authenticate(user=self.homeowner)
+        res = self.client.get(f"{self.feed_url}?sort=rate_asc")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 2)
+        self.assertEqual(float(res.data[0]['daily_rate']), 500.00)
+        self.assertEqual(float(res.data[1]['daily_rate']), 1200.00)
+

@@ -41,6 +41,7 @@ class BookingFeedSerializer(serializers.ModelSerializer):
             'booking_id',
             'poster_id',
             'poster_account_type',
+            'booking_type',
             'profile_link',
             'name',
             'service_address',
