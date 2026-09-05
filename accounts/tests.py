@@ -1161,3 +1161,66 @@ class TestKasambahayResumeEndpoint(TestCase):
         self.assertIsNone(response.data.get("resume_url"))
 
 
+class TestChangePasswordAPI(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = tbl_user_profile.objects.create_user(
+            email='user_pw@example.com',
+            password='OldPassword123!',
+            first_name='Test',
+            last_name='User',
+            account_type='Homeowner'
+        )
+        self.url = reverse('change-password')
+
+    def test_change_password_success(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post(self.url, {
+            'current_password': 'OldPassword123!',
+            'new_password': 'NewPassword456!',
+            'confirm_password': 'NewPassword456!',
+        })
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('NewPassword456!'))
+
+    def test_change_password_wrong_current_password(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post(self.url, {
+            'current_password': 'WrongPassword!',
+            'new_password': 'NewPassword456!',
+            'confirm_password': 'NewPassword456!',
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Current password is incorrect', res.data.get('error', ''))
+
+    def test_change_password_mismatch(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post(self.url, {
+            'current_password': 'OldPassword123!',
+            'new_password': 'NewPassword456!',
+            'confirm_password': 'DifferentPassword!',
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('do not match', res.data.get('error', ''))
+
+    def test_change_password_too_short(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post(self.url, {
+            'current_password': 'OldPassword123!',
+            'new_password': 'short',
+            'confirm_password': 'short',
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('8 characters', res.data.get('error', ''))
+
+    def test_change_password_unauthenticated(self):
+        res = self.client.post(self.url, {
+            'current_password': 'OldPassword123!',
+            'new_password': 'NewPassword456!',
+            'confirm_password': 'NewPassword456!',
+        })
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+

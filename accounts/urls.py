@@ -8,6 +8,7 @@ from .views import (
     UserTagsView,
     PublicProfileView,
     KasambahayResumeView,
+    ChangePasswordView,
 )
 
 
@@ -33,6 +34,9 @@ urlpatterns = [
 
     # Kasambahay Resume Endpoint
     path('resume/', KasambahayResumeView.as_view(), name='kasambahay-resume'),
+
+    # Change Password Endpoint
+    path('change-password/', ChangePasswordView.as_view(), name='change-password'),
 
     # Refresh Endpoints (Used when the access token expires to get a new one)
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh')

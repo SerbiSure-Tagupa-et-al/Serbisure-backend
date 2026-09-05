@@ -11,6 +11,7 @@ from .serializers import (
     KasambahayResumeSerializer,
 )
 from .permissions import IsKasambahay
+from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.exceptions import Throttled
@@ -322,5 +323,41 @@ class KasambahayResumeView(generics.RetrieveUpdateAPIView):
             custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
 
         raise Throttled(detail=custom_message)
+
+
+class ChangePasswordView(APIView):
+    """
+    Endpoint allowing authenticated users to change their password.
+    Requires current_password, new_password, and confirm_password.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current_password = request.data.get('current_password')
+        new_password = request.data.get('new_password')
+        confirm_password = request.data.get('confirm_password')
+
+        if not current_password or not new_password or not confirm_password:
+            return Response(
+                {'error': 'Current password, new password, and confirmation are required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if new_password != confirm_password:
+            return Response({'error': 'New passwords do not match.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if len(new_password) < 8:
+            return Response({'error': 'Password must be at least 8 characters long.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not request.user.check_password(current_password):
+            return Response({'error': 'Current password is incorrect.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if current_password == new_password:
+            return Response({'error': 'New password must be different from current password.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        request.user.set_password(new_password)
+        request.user.save()
+        return Response({'message': 'Password changed successfully.'}, status=status.HTTP_200_OK)
+
 
 
