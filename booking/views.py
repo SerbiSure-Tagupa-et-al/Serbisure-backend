@@ -8,7 +8,9 @@ from rest_framework import generics
 from .serializers import BookingSerializer, BookingFeedSerializer
 from .models import tbl_booking
 from django.core.cache import cache
+from django.db.models import Q
 from core.utils import check_input_letters
+from decimal import Decimal, InvalidOperation
 import math 
 
 # Create your views here.
@@ -87,17 +89,92 @@ class BookingFeedView(generics.ListAPIView):
         # Identify the user who is making the request
         current_user = self.request.user
 
-        # Get the base query (I added a filter so we only show 'Pending' bookings in the feed, ignoring completed ones!)
+        # Get the base query (only show 'Pending' bookings in the feed, ignoring completed ones)
         queryset = tbl_booking.objects.select_related('poster_id').filter(booking_status='Pending')
 
-        # 3. Filter based on their account type!
+        # Filter based on account type
         if current_user.account_type == 'Homeowner':
             # Homeowners only see posts made by Kasambahays
             queryset = queryset.filter(poster_id__account_type='Kasambahay')
-        
         elif current_user.account_type == 'Kasambahay':
             # Kasambahays only see posts made by Homeowners
             queryset = queryset.filter(poster_id__account_type='Homeowner')
-        
-        # Return the final filtered list, newest first
-        return queryset.order_by('-createdAt')
+
+        params = self.request.query_params
+
+        # 1. Service Category filter (supports comma-separated list e.g. ?category=Cleaning,Cooking)
+        category_param = params.get('category')
+        if category_param:
+            raw_cats = [c.strip() for c in category_param.split(',') if c.strip()]
+            if raw_cats and 'All' not in raw_cats and 'all' not in raw_cats:
+                cat_map = {
+                    'cleaning': 'Cleaning',
+                    'child_care': 'Child_care',
+                    'child care': 'Child_care',
+                    'cooking': 'Cooking',
+                    'caregiver': 'Caregiver',
+                    'laundry': 'Laundry',
+                    'all-around': 'All-around',
+                    'all around': 'All-around',
+                }
+                mapped_cats = [cat_map.get(c.lower(), c) for c in raw_cats]
+                try:
+                    queryset = queryset.filter(service_category__overlap=mapped_cats)
+                except Exception:
+                    cat_q = Q()
+                    for cat in mapped_cats:
+                        cat_q |= Q(service_category__icontains=cat)
+                    queryset = queryset.filter(cat_q)
+
+        # 2. Booking type filter (?booking_type=short_term | long_term)
+        bt_param = params.get('booking_type')
+        if bt_param:
+            bt_norm = bt_param.lower().replace('-', '_').strip()
+            if bt_norm in ['short_term', 'part_time', 'parttime']:
+                queryset = queryset.filter(booking_type='short_term')
+            elif bt_norm in ['long_term', 'stay_in', 'stayin']:
+                queryset = queryset.filter(booking_type='long_term')
+
+        # 3. Max & Min daily rate (?max_rate=1500&min_rate=500)
+        max_rate = params.get('max_rate')
+        if max_rate:
+            try:
+                queryset = queryset.filter(daily_rate__lte=Decimal(str(max_rate)))
+            except (InvalidOperation, ValueError, TypeError):
+                pass
+
+        min_rate = params.get('min_rate')
+        if min_rate:
+            try:
+                queryset = queryset.filter(daily_rate__gte=Decimal(str(min_rate)))
+            except (InvalidOperation, ValueError, TypeError):
+                pass
+
+        # 4. Location filter (?location=Cagayan)
+        location = params.get('location')
+        if location and location.strip():
+            queryset = queryset.filter(service_address__icontains=location.strip())
+
+        # 5. Search keyword (?search= or ?q=)
+        search_kw = params.get('search') or params.get('q')
+        if search_kw and search_kw.strip():
+            kw = search_kw.strip()
+            queryset = queryset.filter(
+                Q(service_address__icontains=kw) |
+                Q(special_instruction__icontains=kw) |
+                Q(poster_id__first_name__icontains=kw) |
+                Q(poster_id__last_name__icontains=kw)
+            )
+
+        # 6. Sorting (?sort=rate_asc | rate_desc | oldest | newest)
+        sort = params.get('sort', 'newest')
+        if sort == 'rate_asc':
+            queryset = queryset.order_by('daily_rate')
+        elif sort == 'rate_desc':
+            queryset = queryset.order_by('-daily_rate')
+        elif sort == 'oldest':
+            queryset = queryset.order_by('createdAt')
+        else:
+            queryset = queryset.order_by('-createdAt')
+
+        return queryset
