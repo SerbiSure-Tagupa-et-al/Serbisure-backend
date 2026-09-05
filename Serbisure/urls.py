@@ -29,6 +29,7 @@ urlpatterns = [
     path('api/v1/booking/', include('booking.urls')),
     path('api/v1/chat/', include('chat.urls')),
     path('api/v1/reviews/', include('reviews.urls')),
+    path('api/v1/notifications/', include('notifications.urls')),
 
     # 1. This generates the raw JSON file of your API structure
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
