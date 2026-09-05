@@ -56,11 +56,6 @@ class DocumentUploadView(generics.CreateAPIView):
         
         response = super().create(request, *args, **kwargs)
 
-        # Update user's profile verification_status to 'Pending' if it was 'Unverified'
-        if user.verification_status in ['Unverified', 'Rejected']:
-            user.verification_status = 'Pending'
-            user.save(update_fields=['verification_status'])
-
         # Create user notification
         from notifications.models import tbl_notification
         doc_display = dict(tbl_documents.DOCUMENT_CHOICES).get(doc_type, doc_type)
@@ -103,33 +98,14 @@ class UserVerificationStatusView(generics.GenericAPIView):
         # Determine required document types depending on account type
         if user.account_type == 'Kasambahay':
             required_docs = ['nbi_clearance', 'police_clearance']
-            has_verified = any(d['verification_status'] == 'Verified' for d in serialized_docs)
-            has_pending = any(d['verification_status'] == 'Pending' for d in serialized_docs)
-            has_rejected = any(d['verification_status'] == 'Rejected' for d in serialized_docs)
         elif user.account_type == 'Homeowner':
             required_docs = ['national_id_front', 'national_id_back']
-            verified_types = {d['document_type'] for d in serialized_docs if d['verification_status'] == 'Verified'}
-            has_verified = ('national_id_front' in verified_types and 'national_id_back' in verified_types)
-            has_pending = any(d['verification_status'] == 'Pending' for d in serialized_docs)
-            has_rejected = any(d['verification_status'] == 'Rejected' for d in serialized_docs)
         else:
             required_docs = []
-            has_verified = (user.verification_status == 'Verified')
-            has_pending = False
-            has_rejected = False
-
-        if has_verified:
-            computed_status = 'Verified'
-        elif has_rejected and not has_pending:
-            computed_status = 'Rejected'
-        elif has_pending or serialized_docs:
-            computed_status = 'Pending'
-        else:
-            computed_status = 'Unverified'
 
         return Response({
             "account_type": user.account_type,
-            "overall_status": user.verification_status or computed_status,
+            "overall_status": user.verification_status,
             "required_documents": required_docs,
             "documents": serialized_docs,
         }, status=status.HTTP_200_OK)
