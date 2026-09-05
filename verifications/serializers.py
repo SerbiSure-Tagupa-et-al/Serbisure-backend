@@ -16,12 +16,16 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
         fields = [
             'document_id', 'document_type', 'date_issued', 
             'valid_until', 'document_image', 'document_url', 
-            'verification_status', 'verifyBy'
+            'verification_status', 'verifyBy', 'extracted_data',
+            'ocr_match_score', 'ocr_discrepancies', 'rejection_reason',
+            'created_at'
         ]
 
         read_only_fields = [
             'document_url', 'verification_status', 'verifyBy',
-            'valid_until', 'date_issued'
+            'valid_until', 'date_issued', 'extracted_data',
+            'ocr_match_score', 'ocr_discrepancies', 'rejection_reason',
+            'created_at'
         ]
 
 
@@ -41,12 +45,43 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
 
         # Get the permanent URL from Cloudinary
         public_id = upload_result.get('public_id')
+        doc_type = validated_data.get('document_type')
 
-        document = tbl_documents.objects.create(
+        # Check if there is an existing rejected document to replace
+        existing = tbl_documents.objects.filter(
             user_profile=user,
-            document_url=public_id,
-            **validated_data
-        )
+            document_type=doc_type,
+            verification_status='Rejected'
+        ).first()
+
+        if existing:
+            existing.document_url = public_id
+            existing.verification_status = 'Pending'
+            existing.rejection_reason = None
+            existing.extracted_data = None
+            existing.ocr_raw_text = None
+            existing.ocr_match_score = None
+            existing.ocr_discrepancies = []
+            existing.ocr_processed_at = None
+            for key, val in validated_data.items():
+                setattr(existing, key, val)
+            existing.save()
+            document = existing
+        else:
+            document = tbl_documents.objects.create(
+                user_profile=user,
+                document_url=public_id,
+                verification_status='Pending',
+                **validated_data
+            )
+
+        # Trigger background OCR + Groq processing after DB transaction commits
+        try:
+            from django.db import transaction
+            from verifications.services.document_processor import process_document_async
+            transaction.on_commit(lambda doc_id=str(document.document_id): process_document_async(doc_id))
+        except Exception:
+            pass
 
         return document
 

@@ -40,13 +40,35 @@ class DocumentUploadView(generics.CreateAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if tbl_documents.objects.filter(user_profile=user, document_type=doc_type).exists():
+        # Allow re-upload if previous document was Rejected. Block if Pending or Verified!
+        active_doc = tbl_documents.objects.filter(
+            user_profile=user,
+            document_type=doc_type,
+            verification_status__in=['Pending', 'Verified']
+        ).first()
+
+        if active_doc:
+            status_text = "is currently pending review" if active_doc.verification_status == "Pending" else "is already verified"
             return Response(
-                {"error": f"You have already submitted your {doc_type}"},
+                {"error": f"You have already submitted your {doc_type} ({status_text})."},
                 status=status.HTTP_409_CONFLICT
             )
         
-        return super().create(request, *args, **kwargs)
+        response = super().create(request, *args, **kwargs)
+
+        # Create user notification
+        from notifications.models import tbl_notification
+        doc_display = dict(tbl_documents.DOCUMENT_CHOICES).get(doc_type, doc_type)
+        try:
+            tbl_notification.objects.create(
+                sender_id=user,
+                receiver_id=user,
+                notification_message=f"Your {doc_display} has been submitted and is queued for verification.",
+            )
+        except Exception:
+            pass
+
+        return response
     
     def throttled(self, request, wait):
         # 3600 seconds = 1 hour
@@ -57,3 +79,57 @@ class DocumentUploadView(generics.CreateAPIView):
             custom_message = f"Too many attempts. Please try again in {math.ceil(wait / 60)} minutes"
 
         raise Throttled(detail=custom_message)
+
+
+class UserVerificationStatusView(generics.GenericAPIView):
+    """
+    GET /api/v1/verifications/status/
+    Returns the authenticated user's submitted documents, their status,
+    any rejection reasons, and the overall account verification status.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .serializers_admin import UserDocumentStatusSerializer
+        user = request.user
+        documents = tbl_documents.objects.filter(user_profile=user).order_by('-created_at')
+        serialized_docs = UserDocumentStatusSerializer(documents, many=True).data
+
+        # Determine required document types depending on account type
+        if user.account_type == 'Kasambahay':
+            required_docs = ['nbi_clearance', 'police_clearance']
+        elif user.account_type == 'Homeowner':
+            required_docs = ['national_id_front', 'national_id_back']
+        else:
+            required_docs = []
+
+        return Response({
+            "account_type": user.account_type,
+            "overall_status": user.verification_status,
+            "required_documents": required_docs,
+            "documents": serialized_docs,
+        }, status=status.HTTP_200_OK)
+
+
+class UserDeleteRejectedDocumentView(generics.GenericAPIView):
+    """
+    DELETE /api/v1/verifications/documents/<document_id>/
+    Allows user to delete a document ONLY IF it has been rejected,
+    allowing them to clean up before re-submitting.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, document_id):
+        try:
+            doc = tbl_documents.objects.get(document_id=document_id, user_profile=request.user)
+        except tbl_documents.DoesNotExist:
+            return Response({"error": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if doc.verification_status != 'Rejected':
+            return Response(
+                {"error": f"Cannot delete a document with status '{doc.verification_status}'. Only rejected documents can be deleted."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        doc.delete()
+        return Response({"message": "Rejected document removed successfully."}, status=status.HTTP_200_OK)

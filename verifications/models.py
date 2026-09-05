@@ -69,7 +69,43 @@ class tbl_documents(models.Model):
     verification_status = models.CharField(
         max_length=20,
         choices=VERIFICATION_STATUS_CHOICES,
-        default='Unverified'
+        default='Pending'
+    )
+
+    extracted_data = models.JSONField(
+        blank=True,
+        null=True,
+        help_text="Structured data extracted by Groq AI from OCR text"
+    )
+
+    ocr_raw_text = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Raw text extracted by OCR engine"
+    )
+
+    ocr_match_score = models.FloatField(
+        blank=True,
+        null=True,
+        help_text="0.0-1.0 score indicating how well OCR data matches profile"
+    )
+
+    ocr_discrepancies = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of field mismatches between OCR output and profile data"
+    )
+
+    ocr_processed_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="When OCR + AI processing completed"
+    )
+
+    rejection_reason = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Reason for document rejection by Admin/Barangay"
     )
 
     created_at = models.DateTimeField(
