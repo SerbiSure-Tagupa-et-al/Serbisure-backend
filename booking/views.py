@@ -18,6 +18,9 @@ from django.core.cache import cache
 from django.db.models import Q, Avg
 from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
+from django.utils import timezone
+from datetime import timedelta
+from chat.models import tbl_chat_message
 from notifications.services import send_in_app_notification
 from .wage_policy import get_minimum_daily_wage, get_monthly_equivalent, get_minimum_wage_info
 import math 
@@ -36,6 +39,12 @@ class BookingView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def create(self, request, *args, **kwargs):
+        if getattr(request.user, 'is_restricted', False):
+            return Response({
+                "code": "account_restricted",
+                "detail": "Your account has been restricted from creating or accepting bookings due to 3 cancellation strikes. Please contact support."
+            }, status=status.HTTP_403_FORBIDDEN)
+
         if request.user.verification_status != "Verified":
             return Response({
                 "code": "account_not_verified",
@@ -237,7 +246,12 @@ class BookingAcceptView(APIView):
             return Response({'error': 'You cannot accept your own booking.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if booking.booking_status != 'Pending':
-            return Response({'error': f'Booking cannot be accepted because it is already {booking.booking_status}.'},
+            return Response({'error': 'This job position has already been acquired.', 'code': 'already_acquired'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        existing_assignment = tbl_booking_assignment.objects.filter(booking_id=booking).first()
+        if existing_assignment and existing_assignment.accepter_id and existing_assignment.accepter_id != request.user:
+            return Response({'error': 'This job position has already been acquired.', 'code': 'already_acquired'},
                             status=status.HTTP_400_BAD_REQUEST)
 
         booking.booking_status = 'Accepted'
@@ -260,10 +274,253 @@ class BookingAcceptView(APIView):
             message=f"{accepter_name} has accepted your booking request for {cats}!"
         )
 
+        # Notify other applicants who messaged/proposed about this post (Marked as Closed / FB Marketplace style)
+        notify_other_applicants_listing_closed(booking, request.user)
+
         return Response({
             'message': 'Booking accepted successfully.',
             'booking': BookingDetailSerializer(booking, context={'request': request}).data
         }, status=status.HTTP_200_OK)
+
+
+def notify_other_applicants_listing_closed(booking, accepted_user):
+    """
+    When an applicant is accepted and contract is formalized,
+    notify all other applicants who messaged the homeowner or sent proposals that the
+    job position is already acquired (in simple English).
+    """
+    try:
+        from chat.models import tbl_chat_message
+        cats = ", ".join(booking.service_category) if isinstance(booking.service_category, list) else str(booking.service_category)
+        other_applicants = {}
+
+        # Resolve homeowner and accepted kasambahay
+        if getattr(booking.poster_id, 'account_type', None) == 'Homeowner':
+            homeowner = booking.poster_id
+            accepted_kasambahay = accepted_user
+        elif getattr(accepted_user, 'account_type', None) == 'Homeowner':
+            homeowner = accepted_user
+            accepted_kasambahay = booking.poster_id
+        else:
+            homeowner = booking.poster_id
+            accepted_kasambahay = accepted_user
+
+        accepted_user_id = getattr(accepted_kasambahay, 'id', accepted_kasambahay)
+        homeowner_id = getattr(homeowner, 'id', homeowner)
+
+        # 1. Applicants who submitted counter-proposals
+        for prop in tbl_booking_proposal.objects.filter(booking_id=booking).exclude(proposer_id__in=[accepted_user_id, homeowner_id]):
+            if prop.proposer_id:
+                other_applicants[prop.proposer_id.id] = prop.proposer_id
+
+        # 2. Applicants who sent or received chat messages linked to this booking
+        for msg in tbl_chat_message.objects.filter(booking_id=booking).exclude(sender_id__in=[accepted_user_id, homeowner_id]):
+            if msg.sender_id and getattr(msg.sender_id, 'account_type', None) == 'Kasambahay':
+                other_applicants[msg.sender_id.id] = msg.sender_id
+
+        for msg in tbl_chat_message.objects.filter(booking_id=booking).exclude(receiver_id__in=[accepted_user_id, homeowner_id]):
+            if msg.receiver_id and getattr(msg.receiver_id, 'account_type', None) == 'Kasambahay':
+                other_applicants[msg.receiver_id.id] = msg.receiver_id
+
+        # 3. All Kasambahays who sent messages to this homeowner (e.g. applications/inquiries)
+        kasambahay_senders = tbl_chat_message.objects.filter(
+            receiver_id=homeowner,
+            sender_id__account_type='Kasambahay'
+        ).exclude(sender_id__in=[accepted_user_id, homeowner_id]).values_list('sender_id', flat=True).distinct()
+
+        for uid in kasambahay_senders:
+            try:
+                applicant_user = User.objects.get(pk=uid)
+                other_applicants[applicant_user.id] = applicant_user
+            except User.DoesNotExist:
+                pass
+
+        kasambahay_receivers = tbl_chat_message.objects.filter(
+            sender_id=homeowner,
+            receiver_id__account_type='Kasambahay'
+        ).exclude(receiver_id__in=[accepted_user_id, homeowner_id]).values_list('receiver_id', flat=True).distinct()
+
+        for uid in kasambahay_receivers:
+            try:
+                applicant_user = User.objects.get(pk=uid)
+                other_applicants[applicant_user.id] = applicant_user
+            except User.DoesNotExist:
+                pass
+
+        # Reject any other pending proposals for this booking
+        tbl_booking_proposal.objects.filter(
+            booking_id=booking,
+            status='Pending'
+        ).exclude(proposer_id__in=[accepted_user_id, homeowner_id]).update(status='Rejected')
+
+        closed_notification_msg = f"This job position ({cats}) has already been acquired. Thank you for your application!"
+        closed_chat_msg = f"[JOB_ACQUIRED]: This job position has already been acquired. Thank you for your interest!"
+
+        sent_count = 0
+        for uid, applicant in other_applicants.items():
+            # Check if job acquired chat was already sent recently (Python check since message_payload is encrypted with Fernet)
+            recent_msgs = tbl_chat_message.objects.filter(
+                sender_id=homeowner,
+                receiver_id=applicant
+            ).order_by('-createdAt')[:10]
+
+            already_sent = any(
+                m.message_payload and ('[JOB_ACQUIRED]' in m.message_payload or 'already been acquired' in m.message_payload.lower())
+                for m in recent_msgs
+            )
+
+            if not already_sent:
+                send_in_app_notification(
+                    receiver=applicant,
+                    sender=homeowner,
+                    message=closed_notification_msg
+                )
+                try:
+                    tbl_chat_message.objects.create(
+                        sender_id=homeowner,
+                        receiver_id=applicant,
+                        booking_id=booking,
+                        message_type='text',
+                        message_payload=closed_chat_msg
+                    )
+                    sent_count += 1
+                except Exception as msg_err:
+                    import logging
+                    logging.getLogger(__name__).error(f"[notify_other_applicants_listing_closed] Chat create error: {msg_err}")
+
+        return sent_count
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"[notify_other_applicants_listing_closed] Error: {e}")
+        return 0
+
+
+class BookingConfirmContractView(APIView):
+    """
+    Called when a booking contract is formalized and confirmed (Tier 1-1).
+    - Prevents double contracts if the position is already acquired.
+    - Sets booking_status to 'Accepted' so it disappears from open feeds.
+    - Creates or updates tbl_booking_assignment.
+    - Notifies all other Kasambahays that the job position is already acquired.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if getattr(request.user, 'is_restricted', False):
+            return Response({
+                'error': 'Your account is restricted from confirming contracts due to 3 cancellation strikes.',
+                'code': 'account_restricted'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        booking_id = request.data.get('booking_id')
+        partner_id = request.data.get('partner_id')
+
+        # Resolve accepter
+        accepter = None
+        partner = None
+        if partner_id:
+            try:
+                partner = User.objects.get(pk=partner_id)
+            except (User.DoesNotExist, Exception):
+                pass
+
+        booking = None
+        if booking_id:
+            try:
+                booking = tbl_booking.objects.get(booking_id=booking_id)
+            except (tbl_booking.DoesNotExist, Exception):
+                pass
+
+        if not booking and partner:
+            # Look for pending booking posted by partner or request.user
+            booking = tbl_booking.objects.filter(
+                Q(poster_id=partner) | Q(poster_id=request.user),
+                booking_status='Pending'
+            ).order_by('-createdAt').first()
+
+            if not booking:
+                # Check if there is already an accepted booking
+                already_accepted = tbl_booking.objects.filter(
+                    Q(poster_id=partner) | Q(poster_id=request.user),
+                    booking_status='Accepted'
+                ).order_by('-createdAt').first()
+
+                if already_accepted:
+                    existing_assign = tbl_booking_assignment.objects.filter(booking_id=already_accepted).first()
+                    # Check if someone else already acquired this job position
+                    target_accepter_id = request.user.id if request.user.account_type == 'Kasambahay' else (partner.id if partner else None)
+                    if existing_assign and target_accepter_id and existing_assign.accepter_id_id != target_accepter_id:
+                        return Response({
+                            'error': 'This job position has already been acquired.',
+                            'code': 'already_acquired'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    booking = already_accepted
+
+        # Resolve accepter user
+        if booking and booking.poster_id == request.user and partner:
+            accepter = partner
+        elif booking and booking.poster_id != request.user:
+            accepter = request.user
+        elif partner and partner.account_type == 'Kasambahay':
+            accepter = partner
+        else:
+            accepter = request.user
+
+        # Guard: Check if the booking already has an active contract with ANOTHER kasambahay (prevent double contract)
+        if booking:
+            existing_assignment = tbl_booking_assignment.objects.filter(booking_id=booking).first()
+            if existing_assignment and existing_assignment.accepter_id:
+                if accepter and existing_assignment.accepter_id != accepter:
+                    return Response({
+                        'error': 'This job position has already been acquired.',
+                        'code': 'already_acquired'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+        if not booking:
+            poster = request.user
+            if partner and partner.account_type == 'Homeowner':
+                poster = partner
+
+            from django.utils import timezone
+            booking = tbl_booking.objects.create(
+                poster_id=poster,
+                booking_type='long_term',
+                service_category=['All-around'],
+                start_time=timezone.now(),
+                daily_rate=Decimal('6500'),
+                booking_status='Accepted',
+                special_instruction='Contract formalized via chat'
+            )
+
+        booking.booking_status = 'Accepted'
+        booking.save(update_fields=['booking_status'])
+
+        if accepter:
+            tbl_booking_assignment.objects.update_or_create(
+                booking_id=booking,
+                defaults={'accepter_id': accepter}
+            )
+
+        notified_count = notify_other_applicants_listing_closed(booking, accepter or request.user)
+
+        # Notify the poster about confirmation
+        cats = ", ".join(booking.service_category) if isinstance(booking.service_category, list) else str(booking.service_category)
+        accepter_name = f"{accepter.first_name} {accepter.last_name}".strip() or accepter.username if accepter else "Kasambahay"
+        if booking.poster_id != request.user:
+            send_in_app_notification(
+                receiver=booking.poster_id,
+                sender=request.user,
+                message=f"Contract confirmed! {accepter_name} has accepted your booking request for {cats}!"
+            )
+
+        return Response({
+            'success': True,
+            'message': 'Booking contract confirmed. All other applicants have been notified and listing is closed.',
+            'booking_id': str(booking.booking_id),
+            'booking_status': booking.booking_status,
+            'notified_count': notified_count,
+        }, status=status.HTTP_200_OK)
+
 
 
 class BookingStartView(APIView):
@@ -351,19 +608,33 @@ class BookingCompleteView(APIView):
 
 class BookingCancelView(APIView):
     """
-    Cancels a booking (Tier 1-1).
+    Cancels a booking under the fair 2-hour mutual cancellation policy:
+    1. Unassigned 'Pending' bookings can be cancelled immediately by poster with 0 strikes.
+    2. Confirmed bookings ('Accepted' / 'InProgress'):
+       - Cancellations are only permitted within 2 hours of confirmation (accepted_at).
+       - Both parties must prompt/confirm cancellation:
+         a. Initiator calls cancel -> sets cancel_requested_by, notifies counterparty.
+         b. Counterparty can confirm -> booking marked 'Cancelled', 1 strike added to initiator.
+            If initiator reaches 3 strikes, their account is restricted (is_restricted = True).
+         c. Counterparty can decline -> cancel request dismissed, booking remains active.
+         d. Initiator can withdraw request -> cancel request dismissed.
     """
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, booking_id):
+        if getattr(request.user, 'is_restricted', False):
+            return Response({
+                'error': 'Your account is restricted from managing bookings due to 3 cancellation strikes.'
+            }, status=status.HTTP_403_FORBIDDEN)
+
         try:
             booking = tbl_booking.objects.get(booking_id=booking_id)
         except tbl_booking.DoesNotExist:
             return Response({'error': 'Booking not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         assignment = booking.assignments.select_related('accepter_id').first()
-        is_accepter = assignment and assignment.accepter_id == request.user
-        is_poster = booking.poster_id == request.user
+        is_accepter = bool(assignment and assignment.accepter_id == request.user)
+        is_poster = (booking.poster_id == request.user)
 
         if not (is_poster or is_accepter):
             return Response({'error': 'You are not authorized to cancel this booking.'}, status=status.HTTP_403_FORBIDDEN)
@@ -371,22 +642,159 @@ class BookingCancelView(APIView):
         if booking.booking_status in ['Completed', 'Cancelled']:
             return Response({'error': f'Booking is already {booking.booking_status}.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        booking.booking_status = 'Cancelled'
-        booking.save(update_fields=['booking_status'])
+        action = str(request.data.get('action', 'request') or 'request').strip().lower()
+        reason = str(request.data.get('reason', '') or '').strip()
 
-        # Notify counterparty if assignment existed
-        if assignment and assignment.accepter_id:
-            counterparty = assignment.accepter_id if is_poster else booking.poster_id
-            actor_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
-            cats = ", ".join(booking.service_category) if isinstance(booking.service_category, list) else str(booking.service_category)
+        # 1. Unconfirmed / Pending bookings: poster can cancel immediately with 0 strikes
+        if booking.booking_status == 'Pending':
+            booking.booking_status = 'Cancelled'
+            booking.cancelled_by = request.user
+            booking.cancel_requested_by = None
+            booking.cancellation_reason = reason or 'Cancelled before acceptance'
+            booking.save(update_fields=['booking_status', 'cancelled_by', 'cancel_requested_by', 'cancellation_reason'])
+
+            return Response({
+                'message': 'Booking has been cancelled.',
+                'booking': BookingDetailSerializer(booking, context={'request': request}).data
+            }, status=status.HTTP_200_OK)
+
+        # 2. Confirmed bookings ('Accepted' / 'InProgress'):
+        # Check 2-hour window policy
+        confirmed_at = assignment.accepted_at if (assignment and assignment.accepted_at) else booking.createdAt
+        if confirmed_at:
+            cancellation_deadline = confirmed_at + timedelta(hours=2)
+            if timezone.now() > cancellation_deadline:
+                return Response({
+                    'error': 'Cancellations are only permitted within 2 hours of booking confirmation. The 2-hour window has expired, so this booking cannot be cancelled.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        counterparty = assignment.accepter_id if is_poster else booking.poster_id
+        actor_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
+        cats = ", ".join(booking.service_category) if isinstance(booking.service_category, list) else str(booking.service_category)
+
+        # A. Decline or Withdraw existing cancel request
+        if action == 'decline':
+            if not booking.cancel_requested_by:
+                return Response({'error': 'There is no active cancellation request for this booking.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if booking.cancel_requested_by == request.user:
+                # Initiator withdraws their own cancellation request
+                booking.cancel_requested_by = None
+                booking.cancel_requested_at = None
+                booking.cancellation_reason = None
+                booking.save(update_fields=['cancel_requested_by', 'cancel_requested_at', 'cancellation_reason'])
+                return Response({
+                    'message': 'You have withdrawn your cancellation request. The booking remains active.',
+                    'booking': BookingDetailSerializer(booking, context={'request': request}).data
+                }, status=status.HTTP_200_OK)
+            else:
+                # Counterparty declines the cancellation request
+                initiator = booking.cancel_requested_by
+                booking.cancel_requested_by = None
+                booking.cancel_requested_at = None
+                booking.cancellation_reason = None
+                booking.save(update_fields=['cancel_requested_by', 'cancel_requested_at', 'cancellation_reason'])
+
+                send_in_app_notification(
+                    receiver=initiator,
+                    sender=request.user,
+                    message=f"{actor_name} declined your cancellation request for {cats}. The booking remains active."
+                )
+                try:
+                    tbl_chat_message.objects.create(
+                        sender_id=request.user,
+                        receiver_id=initiator,
+                        booking_id=booking,
+                        message_type='text',
+                        message_payload=f"[CANCELLATION_DECLINED]: {actor_name} declined the cancellation request. This booking remains active."
+                    )
+                except Exception:
+                    pass
+
+                return Response({
+                    'message': 'Cancellation request declined. The booking remains active.',
+                    'booking': BookingDetailSerializer(booking, context={'request': request}).data
+                }, status=status.HTTP_200_OK)
+
+        # B. First party requests cancellation
+        if booking.cancel_requested_by is None:
+            booking.cancel_requested_by = request.user
+            booking.cancel_requested_at = timezone.now()
+            booking.cancellation_reason = reason or "Cancellation requested within 2-hour window"
+            booking.save(update_fields=['cancel_requested_by', 'cancel_requested_at', 'cancellation_reason'])
+
+            if counterparty:
+                send_in_app_notification(
+                    receiver=counterparty,
+                    sender=request.user,
+                    message=f"{actor_name} requested to cancel the booking for {cats}. Both parties must confirm cancellation within the 2-hour window."
+                )
+                try:
+                    tbl_chat_message.objects.create(
+                        sender_id=request.user,
+                        receiver_id=counterparty,
+                        booking_id=booking,
+                        message_type='text',
+                        message_payload=f"[CANCELLATION_REQUESTED]: {actor_name} requested to cancel this booking. Please confirm or decline within the 2-hour cancellation window."
+                    )
+                except Exception:
+                    pass
+
+            return Response({
+                'message': 'Cancellation requested. Awaiting confirmation from the other party.',
+                'booking': BookingDetailSerializer(booking, context={'request': request}).data
+            }, status=status.HTTP_200_OK)
+
+        # C. User already requested cancellation and is attempting again
+        if booking.cancel_requested_by == request.user:
+            return Response({
+                'error': 'You have already requested to cancel this booking. Waiting for the other party to confirm or decline.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # D. Counterparty confirms cancellation -> BOTH parties have now confirmed!
+        initiator = booking.cancel_requested_by
+        booking.booking_status = 'Cancelled'
+        booking.cancelled_by = initiator
+        booking.save(update_fields=['booking_status', 'cancelled_by'])
+
+        # Increment cancellation strikes for the initiator (3 strikes = restricted)
+        initiator.cancellation_strikes = (getattr(initiator, 'cancellation_strikes', 0) or 0) + 1
+        if initiator.cancellation_strikes >= 3:
+            initiator.is_restricted = True
+            initiator.save(update_fields=['cancellation_strikes', 'is_restricted'])
             send_in_app_notification(
-                receiver=counterparty,
-                sender=request.user,
-                message=f"Booking for {cats} was cancelled by {actor_name}."
+                receiver=initiator,
+                sender=None,
+                message="Your account has been restricted because you reached 3 booking cancellations. Please contact support."
+            )
+        else:
+            initiator.save(update_fields=['cancellation_strikes'])
+            send_in_app_notification(
+                receiver=initiator,
+                sender=None,
+                message=f"Booking cancelled. You received 1 cancellation strike ({initiator.cancellation_strikes}/3). 3 strikes will lead to account restriction."
             )
 
+        # Notify counterparty who just approved
+        send_in_app_notification(
+            receiver=request.user,
+            sender=None,
+            message=f"Booking for {cats} cancellation has been mutually confirmed."
+        )
+
+        try:
+            tbl_chat_message.objects.create(
+                sender_id=request.user,
+                receiver_id=initiator,
+                booking_id=booking,
+                message_type='text',
+                message_payload=f"[CANCELLATION_CONFIRMED]: Both parties agreed. This booking is cancelled."
+            )
+        except Exception:
+            pass
+
         return Response({
-            'message': 'Booking has been cancelled.',
+            'message': 'Booking cancellation mutually confirmed.',
             'booking': BookingDetailSerializer(booking, context={'request': request}).data
         }, status=status.HTTP_200_OK)
 
@@ -454,6 +862,9 @@ class BookingProposalCreateView(APIView):
             booking = tbl_booking.objects.get(booking_id=booking_id)
         except tbl_booking.DoesNotExist:
             return Response({'error': 'Booking not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if getattr(request.user, 'is_restricted', False):
+            return Response({'error': 'Your account is restricted from submitting proposals due to 3 cancellation strikes.'}, status=status.HTTP_403_FORBIDDEN)
 
         if getattr(request.user, 'verification_status', None) != 'Verified':
             return Response({'error': 'Only verified users can submit counter-offer proposals.'}, status=status.HTTP_403_FORBIDDEN)
@@ -564,6 +975,9 @@ class BookingProposalRespondView(APIView):
             return Response({'error': 'Proposal not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         booking = proposal.booking_id
+        if getattr(request.user, 'is_restricted', False):
+            return Response({'error': 'Your account is restricted from accepting proposals due to 3 cancellation strikes.'}, status=status.HTTP_403_FORBIDDEN)
+
         if booking.poster_id != request.user:
             return Response({'error': 'Only the booking creator can respond to proposals.'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -597,6 +1011,9 @@ class BookingProposalRespondView(APIView):
                 sender=request.user,
                 message=f"{poster_name} accepted your offer of P{proposal.proposed_rate}! The booking is now confirmed."
             )
+
+            # Notify other applicants (FB Marketplace style closure)
+            notify_other_applicants_listing_closed(booking, proposal.proposer_id)
 
             return Response({
                 'message': 'Proposal accepted and booking confirmed.',

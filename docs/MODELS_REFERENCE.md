@@ -20,6 +20,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `middle_name` | `CharField` | Null=True, Blank=True |
 | `last_name` | `CharField` | - |
 | `is_active` | `BooleanField` | - |
+| `cancellation_strikes` | `PositiveIntegerField` | - |
+| `is_restricted` | `BooleanField` | - |
 | `is_staff` | `BooleanField` | - |
 | `date_of_birth` | `DateField` | Null=True, Blank=True |
 | `religion` | `CharField` | Null=True, Blank=True |
@@ -123,6 +125,10 @@ This document outlines the database schema, models, field types, and choices (en
 | `zip_code` | `CharField` | Null=True, Blank=True |
 | `special_instruction` | `TextField` | Null=True, Blank=True |
 | `daily_rate` | `DecimalField` | - |
+| `cancelled_by` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
+| `cancel_requested_by` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
+| `cancel_requested_at` | `DateTimeField` | Null=True, Blank=True |
+| `cancellation_reason` | `CharField` | Null=True, Blank=True |
 | `createdAt` | `DateTimeField` | Blank=True |
 
 ### `tbl_booking_assignment`

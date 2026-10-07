@@ -159,6 +159,16 @@ class tbl_user_profile(AbstractUser):
         default=True,
     )
 
+    cancellation_strikes = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of confirmed booking cancellations initiated by this user. 3 strikes lead to account restriction."
+    )
+
+    is_restricted = models.BooleanField(
+        default=False,
+        help_text="Designates whether the user's booking/posting privileges are restricted due to policy violations or 3 cancellation strikes."
+    )
+
     is_staff = models.BooleanField(
         default=False,
         help_text="Designates weather the user c an log into admin"
@@ -347,6 +357,16 @@ class tbl_user_profile(AbstractUser):
     is_on_job = models.BooleanField(
         default=False,
         help_text="Kasambahay employment status: True if On the Job, False if Available"
+    )
+
+    cancellation_strikes = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of confirmed booking cancellations initiated by this user. 3 strikes lead to account restriction."
+    )
+
+    is_restricted = models.BooleanField(
+        default=False,
+        help_text="Designates whether the user's booking/posting privileges are restricted due to policy violations or 3 cancellation strikes."
     )
 
     user_about = models.TextField(

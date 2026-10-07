@@ -241,6 +241,8 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         token['email'] = user.email
         token['contact_number'] = user.contact_number
         token['show_contact_number'] = getattr(user, 'show_contact_number', True)
+        token['cancellation_strikes'] = getattr(user, 'cancellation_strikes', 0)
+        token['is_restricted'] = getattr(user, 'is_restricted', False)
         token['user_tags'] = user.user_tags or []
         token['region'] = user.region or ''
         token['province'] = user.province or ''
@@ -282,6 +284,8 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         token['email'] = user.email
         token['contact_number'] = user.contact_number
         token['show_contact_number'] = getattr(user, 'show_contact_number', True)
+        token['cancellation_strikes'] = getattr(user, 'cancellation_strikes', 0)
+        token['is_restricted'] = getattr(user, 'is_restricted', False)
         token['social_links'] = getattr(user, 'social_links', []) or []
         token['show_social_links'] = getattr(user, 'show_social_links', True)
         token['user_tags'] = user.user_tags or []
@@ -668,6 +672,8 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             'date_joined',
             'social_links',
             'show_social_links',
+            'cancellation_strikes',
+            'is_restricted',
         ]
         read_only_fields = fields
 

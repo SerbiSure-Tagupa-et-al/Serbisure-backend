@@ -174,6 +174,12 @@ class BookingDetailSerializer(serializers.ModelSerializer):
     has_reviewed = serializers.SerializerMethodField()
     proposals_count = serializers.SerializerMethodField()
     full_address = serializers.ReadOnlyField()
+    cancel_requested_by = serializers.SerializerMethodField()
+    can_cancel = serializers.SerializerMethodField()
+    cancellation_deadline = serializers.SerializerMethodField()
+    is_cancel_requested = serializers.SerializerMethodField()
+    cancel_requested_by_me = serializers.SerializerMethodField()
+    pending_cancel_approval = serializers.SerializerMethodField()
 
     class Meta:
         model = tbl_booking
@@ -199,6 +205,14 @@ class BookingDetailSerializer(serializers.ModelSerializer):
             'assigned_partner',
             'has_reviewed',
             'proposals_count',
+            'cancel_requested_by',
+            'cancel_requested_at',
+            'cancellation_reason',
+            'can_cancel',
+            'cancellation_deadline',
+            'is_cancel_requested',
+            'cancel_requested_by_me',
+            'pending_cancel_approval',
         ]
 
     def get_poster(self, obj):
@@ -251,6 +265,55 @@ class BookingDetailSerializer(serializers.ModelSerializer):
 
     def get_proposals_count(self, obj):
         return obj.proposals.count()
+
+    def get_cancel_requested_by(self, obj):
+        if not obj.cancel_requested_by:
+            return None
+        u = obj.cancel_requested_by
+        first = u.first_name or ''
+        last = u.last_name or ''
+        full_name = f"{first} {last}".strip() or u.username
+        return {
+            'id': str(u.id),
+            'name': full_name,
+            'account_type': u.account_type,
+        }
+
+    def get_cancellation_deadline(self, obj):
+        if obj.booking_status in ['Accepted', 'InProgress']:
+            assignment = obj.assignments.first()
+            confirmed_at = assignment.accepted_at if (assignment and assignment.accepted_at) else obj.createdAt
+            if confirmed_at:
+                from datetime import timedelta
+                return (confirmed_at + timedelta(hours=2)).isoformat()
+        return None
+
+    def get_can_cancel(self, obj):
+        if obj.booking_status == 'Pending':
+            return True
+        if obj.booking_status in ['Accepted', 'InProgress']:
+            assignment = obj.assignments.first()
+            confirmed_at = assignment.accepted_at if (assignment and assignment.accepted_at) else obj.createdAt
+            if confirmed_at:
+                from django.utils import timezone
+                from datetime import timedelta
+                return timezone.now() <= (confirmed_at + timedelta(hours=2))
+        return False
+
+    def get_is_cancel_requested(self, obj):
+        return bool(obj.cancel_requested_by)
+
+    def get_cancel_requested_by_me(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        return bool(obj.cancel_requested_by and obj.cancel_requested_by == request.user)
+
+    def get_pending_cancel_approval(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        return bool(obj.cancel_requested_by and obj.cancel_requested_by != request.user)
 
 
 class BookingProposalSerializer(serializers.ModelSerializer):

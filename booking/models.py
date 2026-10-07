@@ -148,6 +148,35 @@ class tbl_booking(models.Model):
         blank=False
     )
 
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cancelled_bookings',
+        db_column='cancelled_by'
+    )
+
+    cancel_requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cancel_requested_bookings',
+        db_column='cancel_requested_by'
+    )
+
+    cancel_requested_at = models.DateTimeField(
+        null=True,
+        blank=True
+    )
+
+    cancellation_reason = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True
+    )
+
     createdAt = models.DateTimeField(
         auto_now_add=True
     )

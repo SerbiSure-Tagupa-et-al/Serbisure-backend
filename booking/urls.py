@@ -14,6 +14,7 @@ from .views import (
     BookingProposalRespondView,
     BookingRecommendationsView,
     BookingMinimumWageView,
+    BookingConfirmContractView,
 )
 
 urlpatterns = [
@@ -23,6 +24,7 @@ urlpatterns = [
     path('assigned/', MyAssignedBookingsView.as_view(), name='booking-assigned'),
     path('recommendations/', BookingRecommendationsView.as_view(), name='booking-recommendations'),
     path('minimum-wage/', BookingMinimumWageView.as_view(), name='booking-minimum-wage'),
+    path('confirm-contract/', BookingConfirmContractView.as_view(), name='booking-confirm-contract'),
     path('<uuid:booking_id>/', BookingDetailView.as_view(), name='booking-detail'),
     path('<uuid:booking_id>/accept/', BookingAcceptView.as_view(), name='booking-accept'),
     path('<uuid:booking_id>/start/', BookingStartView.as_view(), name='booking-start'),
