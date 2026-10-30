@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from accounts.workforce import PH_TIME
 from .models import tbl_documents
 from .services.document_upload import create_uploaded_document
 import cloudinary.utils
@@ -214,7 +215,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
 
     def get_submittedDate(self, obj):
         if obj.created_at:
-            return obj.created_at.strftime('%b %d, %Y %I:%M %p')
+            return obj.created_at.astimezone(PH_TIME).strftime('%b %d, %Y %I:%M %p PHT')
         return "Recent"
 
     def get_issuedDate(self, obj):
