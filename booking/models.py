@@ -139,7 +139,7 @@ class tbl_booking(models.Model):
         max_length=4,
         blank=True,
         null=True,
-        default='9000',
+        default='',
         validators=[
             RegexValidator(
                 r'^(0[4-9]\d{2}|[1-9]\d{3})$', 

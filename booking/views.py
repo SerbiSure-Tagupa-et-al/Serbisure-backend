@@ -668,7 +668,7 @@ class BookingRecommendationsView(APIView):
                     'role': 'Kasambahay',
                     'match_score': min(score, 100),
                     'rating': round(rating_val, 1),
-                    'location': f"{w.city or ''}, {w.province or ''}".strip(', ') or 'Philippines',
+                    'location': f"{w.city or ''}, {w.province or ''}".strip(', ') or '',
                     'tags': w.user_tags or [],
                     'avatar': get_signed_avatar(w),
                     'verification_status': w.verification_status,
@@ -708,7 +708,7 @@ class BookingRecommendationsView(APIView):
                 from .serializers import get_signed_avatar
                 p_first = job.poster_id.first_name or ''
                 p_last = job.poster_id.last_name or ''
-                display_loc = f"{job.barangay}, {job.city}" if (job.barangay and job.city) else (job.full_address or 'Cagayan de Oro')
+                display_loc = f"{job.barangay}, {job.city}" if (job.barangay and job.city) else (job.full_address or '')
                 scored_jobs.append({
                     'booking_id': str(job.booking_id),
                     'title': ", ".join(job.service_category) if isinstance(job.service_category, list) else str(job.service_category),

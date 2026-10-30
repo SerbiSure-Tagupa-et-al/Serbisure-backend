@@ -472,7 +472,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         return True
 
     def get_contactNumber(self, obj):
-        return getattr(obj.user_profile, 'contact_number', '') or '+639171234567'
+        return getattr(obj.user_profile, 'contact_number', '') or ''
 
     def get_email(self, obj):
         return getattr(obj.user_profile, 'email', '')

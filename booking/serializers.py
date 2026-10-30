@@ -54,7 +54,7 @@ class PostStateSerializerMixin:
 
 class BookingSerializer(serializers.ModelSerializer):
     work_setup = serializers.ChoiceField(choices=tbl_booking.WORK_SETUP_CHOICES, required=True)
-    zip_code = serializers.CharField(max_length=4, required=False, default='9000', allow_blank=True)
+    zip_code = serializers.CharField(max_length=4, required=False, default='', allow_blank=True)
     region = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
     province = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
     city = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)

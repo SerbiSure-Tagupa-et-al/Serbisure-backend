@@ -12,11 +12,10 @@ from core.utils import (
     get_signed_cloudinary_url
 )
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from rest_framework.exceptions import AuthenticationFailed, ValidationError
+from rest_framework.exceptions import AuthenticationFailed
 import uuid
 import re
 from urllib.parse import urlparse
-from django.db.models import Q
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     # This enrsure the password is required to create an account,
@@ -288,10 +287,10 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         token['barangay'] = user.barangay or ''
         token['street'] = user.street or ''
         token['zipcode'] = user.zipcode or ''
-        token['country'] = user.country or 'Philippines'
+        token['country'] = user.country or ''
         token['date_of_birth'] = str(user.date_of_birth) if user.date_of_birth else ''
         token['gender'] = user.gender or ''
-        token['nationality'] = user.nationality or 'Filipino'
+        token['nationality'] = user.nationality or ''
         token['religion'] = user.religion or ''
 
         token['profile_link'] = get_signed_cloudinary_url(user.profile_link, as_avatar=True)
@@ -331,8 +330,9 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         token['barangay'] = user.barangay or ''
         token['street'] = user.street or ''
         token['zipcode'] = user.zipcode or ''
-        token['country'] = user.country or 'Philippines'
+        token['country'] = user.country or ''
 
+        token['nationality'] = user.nationality or ''
         token['profile_link'] = get_signed_cloudinary_url(user.profile_link, as_avatar=True)
         return token
     
@@ -384,8 +384,6 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
             "access": str(refresh.access_token),
         }
 
-import cloudinary.uploader
-
 class ProfileImageUploadSerializer(serializers.ModelSerializer):
     profile_image = serializers.ImageField(
         write_only=True,
@@ -404,7 +402,6 @@ class ProfileImageUploadSerializer(serializers.ModelSerializer):
         return instance
 
     def to_representation(self, instance):
-        import cloudinary.utils
         representation = super().to_representation(instance)
         representation['profile_link'] = get_signed_cloudinary_url(instance.profile_link, as_avatar=True)
         return representation
