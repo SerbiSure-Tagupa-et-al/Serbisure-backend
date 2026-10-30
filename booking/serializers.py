@@ -124,7 +124,15 @@ class BookingSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({field: 'The schedule must match the selected working time in the Philippines.'})
         if start_time and days:
             start_day = ['M', 'T', 'W', 'Th', 'F', 'S', 'Su'][start_time.astimezone(PH_TIME).weekday()]
-            if start_day not in days:
+            short_range = (data.get('booking_type') == 'short_term' and end_time
+                and end_time.astimezone(PH_TIME).date() > start_time.astimezone(PH_TIME).date())
+            if short_range:
+                day_span = (end_time.astimezone(PH_TIME).date() - start_time.astimezone(PH_TIME).date()).days
+                weekdays = ['M', 'T', 'W', 'Th', 'F', 'S', 'Su']
+                first = start_time.astimezone(PH_TIME).weekday()
+                if not any(weekdays[(first + offset) % 7] in days for offset in range(min(day_span + 1, 7))):
+                    raise serializers.ValidationError({'work_days': 'Select a working day within the date range.'})
+            elif start_day not in days:
                 raise serializers.ValidationError({'work_days': 'The start date must fall on a selected working day.'})
 
         if start_time and start_time <= now: 
