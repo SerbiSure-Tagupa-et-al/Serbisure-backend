@@ -20,6 +20,7 @@ from verifications.services.groq_service import (
     extract_from_image_vision,
 )
 from verifications.services.matching_service import detect_discrepancies
+from verifications.services.document_fields import CORRECTIONS_KEY, merge_document_fields
 
 logger = logging.getLogger(__name__)
 MAX_AUTOMATIC_RETRIES = 3
@@ -28,6 +29,8 @@ PROCESSING_LEASE = timedelta(minutes=5)
 
 
 def _needs_analysis(document):
+    if (document.extracted_data or {}).get(CORRECTIONS_KEY):
+        return document.ocr_processed_at is None
     return (
         document.ocr_processed_at is None
         or not document.extracted_data
@@ -114,6 +117,13 @@ def _process_claimed_document(document):
         raw_text = vision_text or raw_text
     if not isinstance(extracted_data, dict):
         raise ValueError('Document extraction did not return an object')
+
+    # Provider output cannot mark itself as a human correction.
+    extracted_data.pop(CORRECTIONS_KEY, None)
+    corrections = (document.extracted_data or {}).get(CORRECTIONS_KEY)
+    if corrections:
+        extracted_data = merge_document_fields(extracted_data, corrections, document.document_type)
+        extracted_data[CORRECTIONS_KEY] = corrections
 
     match_score, discrepancies = detect_discrepancies(extracted_data, document.user_profile)
     fields = {

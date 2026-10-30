@@ -1,7 +1,7 @@
 import logging
 from rest_framework import generics, status
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated, BasePermission, AllowAny
+from rest_framework.permissions import IsAuthenticated, BasePermission
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
@@ -224,11 +224,22 @@ class AdminAuditLogListView(generics.ListAPIView):
     GET /api/v1/verifications/admin/audit-logs/
     Returns immutable audit trail logs for Superadmin dashboard with search, filtering, and pagination.
     """
-    permission_classes = [AllowAny]
+    from accounts.permissions import IsPortalAdmin
+    permission_classes = [IsAuthenticated, IsPortalAdmin]
     serializer_class = AdminAuditLogSerializer
 
     def get_queryset(self):
         qs = tbl_audit_logs.objects.all().order_by('-created_at')
+
+        from accounts.admin_statistics import barangay_name
+        if self.request.user.account_type == 'Barangay':
+            from rest_framework.exceptions import PermissionDenied
+            own = barangay_name(self.request.user.barangay).casefold()
+            if not own:
+                raise PermissionDenied('Your account has no assigned barangay.')
+            allowed = [pk for pk, barangay in qs.values_list('pk', 'target_barangay')
+                       if barangay_name(barangay).casefold() == own]
+            qs = qs.filter(pk__in=allowed)
 
         action_param = self.request.query_params.get('action')
         if action_param and action_param.upper() != 'ALL':
@@ -239,8 +250,10 @@ class AdminAuditLogListView(generics.ListAPIView):
             qs = qs.filter(actor_role__iexact=role_param)
 
         barangay_param = self.request.query_params.get('barangay')
-        if barangay_param and barangay_param != 'All Barangays':
-            qs = qs.filter(Q(target_barangay__iexact=barangay_param) | Q(actor_barangay__iexact=barangay_param))
+        if self.request.user.account_type != 'Barangay' and barangay_param and barangay_param != 'All Barangays':
+            scope = barangay_name(barangay_param).casefold()
+            qs = qs.filter(pk__in=[pk for pk, barangay in qs.values_list('pk', 'target_barangay')
+                                   if barangay_name(barangay).casefold() == scope])
 
         search = self.request.query_params.get('search')
         if search:
