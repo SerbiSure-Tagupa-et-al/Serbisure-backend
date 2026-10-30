@@ -44,7 +44,7 @@ def cancellation_preview(booking, actor):
 
 
 @transaction.atomic
-def cancel_booking(booking_id, actor, reason, expected_points=None):
+def cancel_booking(booking_id, actor, reason, expected_points=None, *, pending_only=False):
     preview = get_object_or_404(tbl_booking, pk=booking_id)
     people = lock_participants(preview.poster_id_id, actor.pk)
     actor = people[actor.pk]
@@ -54,6 +54,8 @@ def cancel_booking(booking_id, actor, reason, expected_points=None):
         if booking.cancelled_by_id == actor.pk:
             return booking, actor, False
         raise ValidationError({'detail': 'This booking is already cancelled.'})
+    if pending_only and (booking.booking_status != 'Pending' or booking.recipient_id_id or actor.pk != booking.poster_id_id):
+        raise ValidationError({'detail': 'This post has already been booked. Refresh your posts to see its current status.'})
     if reason not in cancellation_reasons(actor):
         raise ValidationError({'reason': 'Choose a cancellation reason.'})
     refresh_monthly_penalties(actor)

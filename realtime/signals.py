@@ -33,6 +33,11 @@ def booking_changed(sender, instance, raw=False, **kwargs):
     if raw:
         return
     booking = instance if sender is tbl_booking else instance.booking_id
+    if sender in (tbl_booking, tbl_booking_assignment):
+        from .events import publish_feed_change
+        public_id = booking.pk if not booking.recipient_id_id else None
+        if public_id:
+            publish_feed_change(public_id)
     participants = {booking.poster_id_id, booking.recipient_id_id}
     participants.update(booking.assignments.values_list('accepter_id_id', flat=True))
     participants.update(booking.proposals.values_list('proposer_id_id', flat=True))

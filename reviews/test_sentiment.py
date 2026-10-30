@@ -1,6 +1,7 @@
 import json
 from unittest.mock import MagicMock, patch
 import requests
+from urllib3.exceptions import ReadTimeoutError
 from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 from .sentiment import analyze_feedback, SentimentUnavailable
@@ -9,7 +10,7 @@ from .sentiment import analyze_feedback, SentimentUnavailable
 @override_settings(HUGGINGFACE_API_TOKEN='private-test-token',
                    HUGGINGFACE_SENTIMENT_SPACE_URL='https://example.hf.space',
                    HUGGINGFACE_SENTIMENT_MODEL_ID='Rhoii/cebuano-taglish-sentiment',
-                   HUGGINGFACE_SENTIMENT_TIMEOUT_SECONDS=30)
+                   HUGGINGFACE_SENTIMENT_TIMEOUT_SECONDS=40)
 class SentimentTests(SimpleTestCase):
     def setUp(self):
         cache.clear()
@@ -78,6 +79,106 @@ class SentimentTests(SimpleTestCase):
                 analyze_feedback('Pangit ug batasan')
         self.assertNotIn('private-test-token', str(error.exception))
         self.assertNotIn('private-test-token', str(logs.output))
+
+    def test_slow_submission_succeeds_and_stream_uses_only_remaining_budget(self):
+        clock = [100.0]
+
+        def submitted():
+            clock[0] = 128.0  # Longer than the previous ten-second submission limit.
+            return {'event_id': 'a' * 32}
+
+        self.session.post.return_value.__enter__.return_value.json.side_effect = submitted
+        self.complete()
+        with patch('reviews.sentiment.time.monotonic', side_effect=lambda: clock[0]):
+            self.assertEqual(analyze_feedback('Dili kabalo mo lipyo')['label'], 'Negative')
+        self.assertEqual(self.session.post.call_args.kwargs['timeout'], (5, 30))
+        self.assertEqual(self.session.get.call_args.kwargs['timeout'], (5, 12))
+
+    def test_submit_timeouts_log_the_stage_without_private_exception_messages(self):
+        for exception in (requests.ConnectTimeout, requests.ReadTimeout):
+            with self.subTest(exception=exception):
+                self.session.post.side_effect = exception('private-test-token private-feedback')
+                with self.assertLogs('reviews.sentiment', level='WARNING') as logs:
+                    with self.assertRaises(SentimentUnavailable) as error:
+                        analyze_feedback('Dili kabalo mo lipyo')
+                self.assertEqual(error.exception.reason, 'timeout')
+                entry = json.loads(logs.records[-1].getMessage())
+                self.assertEqual(entry['stage'], 'submit_prediction')
+                self.assertEqual(entry['error_type'], exception.__name__)
+                self.assertIsNone(entry['http_status'])
+                self.assertNotIn('private-test-token', str(logs.output))
+                self.assertNotIn('private-feedback', str(logs.output))
+        self.session.get.assert_not_called()
+
+    def test_wrapped_stream_timeout_is_retryable_and_not_cached(self):
+        self.stream.iter_lines.side_effect = requests.ConnectionError(
+            ReadTimeoutError(None, 'private-url', 'private-test-token'))
+        with self.assertLogs('reviews.sentiment', level='WARNING') as logs:
+            with self.assertRaises(SentimentUnavailable) as error:
+                analyze_feedback('Dili kabalo mo lipyo')
+        self.assertEqual(error.exception.reason, 'timeout')
+        entry = json.loads(logs.records[-1].getMessage())
+        self.assertEqual(entry['stage'], 'wait_prediction')
+        self.assertEqual(entry['http_status'], 200)
+        self.assertEqual(entry['error_type'], 'ConnectionError')
+        self.assertNotIn('private-test-token', str(logs.output))
+        self.stream.iter_lines.side_effect = None
+        self.complete()
+        self.assertEqual(analyze_feedback('Dili kabalo mo lipyo')['label'], 'Negative')
+        self.assertEqual(self.session.post.call_count, 2)
+
+    def test_http_failures_log_status_and_stage_without_response_body(self):
+        for stage, response, statuses in (
+            ('submit_prediction', self.session.post.return_value.__enter__.return_value, (401, 429, 503)),
+            ('wait_prediction', self.stream, (503,)),
+        ):
+            for status in statuses:
+                with self.subTest(stage=stage, status=status):
+                    response.status_code = status
+                    with self.assertLogs('reviews.sentiment', level='WARNING') as logs:
+                        with self.assertRaises(SentimentUnavailable) as error:
+                            analyze_feedback('Dili kabalo mo lipyo')
+                    self.assertEqual(error.exception.reason, 'provider_http_error')
+                    entry = json.loads(logs.records[-1].getMessage())
+                    self.assertEqual((entry['stage'], entry['http_status']), (stage, status))
+                    response.status_code = 200
+
+    def test_malformed_json_is_identified_without_logging_its_contents(self):
+        self.stream.iter_lines.return_value = ['event: complete', 'data: private-test-token', '']
+        with self.assertLogs('reviews.sentiment', level='WARNING') as logs:
+            with self.assertRaises(SentimentUnavailable) as error:
+                analyze_feedback('Dili kabalo mo lipyo')
+        self.assertEqual(error.exception.reason, 'invalid_response')
+        self.assertEqual(json.loads(logs.records[-1].getMessage())['stage'], 'parse_prediction')
+        self.assertNotIn('private-test-token', str(logs.output))
+
+    def test_exhausted_budget_does_not_start_a_stream(self):
+        clock = [100.0]
+
+        def submitted():
+            clock[0] = 141.0
+            return {'event_id': 'a' * 32}
+
+        self.session.post.return_value.__enter__.return_value.json.side_effect = submitted
+        with patch('reviews.sentiment.time.monotonic', side_effect=lambda: clock[0]):
+            with self.assertRaises(SentimentUnavailable) as error:
+                analyze_feedback('Dili kabalo mo lipyo')
+        self.assertEqual(error.exception.reason, 'timeout')
+        self.session.get.assert_not_called()
+
+    def test_complete_event_at_eof_after_deadline_is_not_saved(self):
+        clock = [100.0]
+
+        def lines(**kwargs):
+            yield 'event: complete'
+            yield 'data: ' + json.dumps(self.payload)
+            clock[0] = 141.0
+
+        self.stream.iter_lines.side_effect = lines
+        with patch('reviews.sentiment.time.monotonic', side_effect=lambda: clock[0]):
+            with self.assertRaises(SentimentUnavailable) as error:
+                analyze_feedback('Dili kabalo mo lipyo')
+        self.assertEqual(error.exception.reason, 'timeout')
 
     def test_incomplete_stream_and_http_failure_are_not_predictions(self):
         self.stream.iter_lines.return_value = ['event: heartbeat', 'data: null', '']

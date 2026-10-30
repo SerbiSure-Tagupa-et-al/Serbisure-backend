@@ -6,7 +6,7 @@ Mobile submits authenticated feedback, stars, booking ID, and a retry key to Dja
 
 - Backend environment: `HUGGINGFACE_API_TOKEN` (or `HF_TOKEN`) and `HUGGINGFACE_SENTIMENT_SPACE_URL`. The token must have access to the configured Space. Never put it in `EXPO_PUBLIC_*` variables.
 - Apply Django migrations, including `reviews.0003_tbl_review_sentiment_analysis_and_more`, on each target database before starting the updated backend. The local development database has been migrated.
-- Restart Django and reload Expo after updating the code. Cloud deployment is separate; configure its private environment and ensure its request execution limit accommodates the model's 30-second processing budget plus connection overhead. Mobile waits up to 60 seconds.
+- Restart Django after updating backend code. Cloud deployment is separate; configure its private environment and ensure its request execution limit accommodates the model's 40-second processing budget plus connection overhead and stalled-stream detection. The initial prediction request can wait up to 30 seconds for a response; a stream that stops sending data times out after at most 15 seconds. Mobile already waits up to 60 seconds and needs no change for this adjustment.
 - Model source is recorded as `Rhoii/cebuano-taglish-sentiment`, the model used by the configured SerbiSure Space. When changing that Space's model, update this configured identifier too. Metadata records source, label, confidence, probabilities, Space URL, and analysis timestamp; it is not a pinned model artifact revision.
 
 ## User-visible states
@@ -16,6 +16,8 @@ Mobile submits authenticated feedback, stars, booking ID, and a retry key to Dja
 3. Success: **Review submitted**, the actual saved Positive / Negative / Neutral result, and **Done**. Star rating remains separate.
 4. Provider quota, network, malformed result, or timeout: no review is saved as a fallback. Django returns HTTP 503 with `sentiment_unavailable`; mobile preserves feedback and shows **Analysis is unavailable right now** and **Try Again**.
 5. Mobile loses the response: retrying unchanged feedback with the same key returns the saved review if it already exists. The key is scoped to the reviewer and stored in PostgreSQL. A different body cannot reuse a saved key. Existing booking/reviewer uniqueness is also retained.
+
+Backend `sentiment_api` logs identify the stage (`submit_prediction`, `wait_prediction`, or `parse_prediction`), elapsed time, failure reason, HTTP status when received, and exception type for network/parsing errors. They exclude credentials, review text, event IDs, raw exception messages, and provider response bodies. Stream read timeouts wrapped as connection errors are recorded as `timeout`.
 
 The request is synchronous: there are no invisible pending review rows or background tasks. A review becomes public only after valid analysis and a successful database save.
 

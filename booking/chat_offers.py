@@ -12,7 +12,7 @@ from rest_framework.throttling import UserRateThrottle
 from django.contrib.auth import get_user_model
 from chat.moderation import LANGUAGE_NOTICE
 from .models import tbl_booking
-from .serializers import BookingSerializer, BookingDetailSerializer
+from .serializers import BookingSerializer, BookingDetailSerializer, ChatOfferContextSerializer
 from .services import lock_participants, ensure_eligible_pair, enforce_pair_cap
 
 
@@ -29,9 +29,11 @@ class ChatBookingOfferView(APIView):
     def post(self, request):
         try:
             key = UUID(request.headers.get('Idempotency-Key', ''))
-            recipient_id = UUID(str(request.data.get('recipient_id', '')))
         except (ValueError, TypeError, AttributeError):
-            raise ValidationError({'detail': 'A UUID Idempotency-Key and recipient_id are required.'})
+            raise ValidationError({'detail': 'The offer request key is invalid. Reopen the offer and try again.'})
+        context = ChatOfferContextSerializer(data=request.data)
+        context.is_valid(raise_exception=True)
+        recipient_id = context.validated_data['recipient_id']
         recipient = get_object_or_404(get_user_model(), pk=recipient_id)
         people = lock_participants(request.user.pk, recipient.pk)
         sender, recipient = people[request.user.pk], people[recipient.pk]

@@ -10,6 +10,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal
 from .wage_policy import validate_rate
 from accounts.penalties import assert_booking_unrestricted
+from .availability import UNAVAILABLE_MESSAGE, PASSED_SCHEDULE_MESSAGE
 
 PH_TIME = ZoneInfo('Asia/Manila')
 SHORT_TERM_CAP = 3
@@ -51,16 +52,30 @@ def ensure_eligible_pair(poster, accepter):
             raise PermissionDenied('Both participants need current approved identity documents.')
 
 
-def ensure_open(booking):
+def ensure_open(booking, *, require_future=True):
     if booking.booking_status != 'Pending' or booking.assignments.exists():
-        raise ValidationError({'error': 'This post is no longer available.'})
-    if booking.start_time <= timezone.now():
-        raise ValidationError({'error': 'This post has expired. The poster must publish a new schedule.'})
+        raise ValidationError({'code': 'post_unavailable', 'error': UNAVAILABLE_MESSAGE})
+    if require_future and booking.start_time <= timezone.now():
+        raise ValidationError({'code': 'schedule_passed', 'error': PASSED_SCHEDULE_MESSAGE})
     if (booking.booking_type == 'long_term' and booking.end_time
             and (booking.end_time.astimezone(PH_TIME).date() - booking.start_time.astimezone(PH_TIME).date()).days < 30):
         raise ValidationError({'end_time': 'SerbiSure requires at least 30 days for long-term posts. Choose a later end date.'})
     if booking.rate_needs_review:
         raise ValidationError({'error': 'The poster must confirm the monthly amount on this legacy post before it can be accepted.'})
+
+
+def close_other_applications(booking, selected_user):
+    from notifications.services import send_in_app_notification
+    selected = booking.proposals.filter(proposer_id=selected_user, status='Pending')
+    selected.update(status='Accepted')
+    others = booking.proposals.filter(status='Pending').exclude(proposer_id=selected_user)
+    recipients = {row.proposer_id_id: row.proposer_id for row in others.select_related('proposer_id')}
+    others.update(status='Rejected')
+    for person in recipients.values():
+        send_in_app_notification(receiver=person, sender=booking.poster_id,
+            message='A post you applied to has been booked. Your application is closed / not selected.')
+    from realtime.events import publish
+    publish([booking.poster_id_id, selected_user.pk, *recipients], {'type': 'booking.changed', 'booking_id': str(booking.pk)})
 
 
 def enforce_pair_cap(booking, accepter):
@@ -71,7 +86,7 @@ def enforce_pair_cap(booking, accepter):
 
 def lock_participants(poster_id, accepter_id):
     # Stable user locks serialize the pair across different listings, not just one post.
-    users = list(get_user_model().objects.select_for_update().filter(pk__in=[poster_id, accepter_id]).order_by('pk'))
+    users = list(get_user_model().objects.select_for_update(no_key=True).filter(pk__in=[poster_id, accepter_id]).order_by('pk'))
     return {person.pk: person for person in users}
 
 
@@ -103,12 +118,12 @@ def accept_engagement(booking_id, actor, proposal_id=None):
     if proposal:
         proposal.status = 'Accepted'
         proposal.save(update_fields=['status'])
-    booking.proposals.filter(status='Pending').update(status='Rejected')
+    close_other_applications(booking, accepter)
     return booking, accepter
 
 
 @transaction.atomic
-def create_proposal(booking_id, actor, amount, period, message):
+def create_proposal(booking_id, actor, amount, period, message, *, apply_at_posted_rate=False):
     preview = get_object_or_404(tbl_booking, pk=booking_id)
     people = lock_participants(preview.poster_id_id, actor.pk)
     from chat.moderation import inspect_outgoing
@@ -117,12 +132,20 @@ def create_proposal(booking_id, actor, amount, period, message):
     ensure_eligible_pair(people[booking.poster_id_id], people[actor.pk])
     if booking.recipient_id_id and booking.recipient_id_id != actor.pk:
         raise PermissionDenied('This private offer is addressed to another participant.')
-    ensure_open(booking)
+    if apply_at_posted_rate:
+        if booking.poster_id.account_type != 'Homeowner' or booking.recipient_id_id:
+            raise ValidationError({'error': 'Applications are only available on public job posts.'})
+        ensure_open(booking, require_future=False)
+        existing = booking.proposals.filter(proposer_id=actor, status__in=['Pending', 'Accepted']).order_by('-createdAt').first()
+        if existing:
+            return existing, False
+        amount, period = booking.rate_amount, booking.rate_period
+    ensure_open(booking, require_future=False)
     amount = validate_rate(amount, booking.booking_type, booking.region, booking.full_address,
                            field='proposed_rate', period=period)
     enforce_pair_cap(booking, actor)
     if booking.proposals.filter(proposer_id=actor, status='Pending').exists():
         raise ValidationError({'error': 'You already have a pending proposal for this post.'})
     return tbl_booking_proposal.objects.create(booking_id=booking, proposer_id=actor,
-                                                proposed_rate=amount, message=message)
+                                                proposed_rate=amount, message=message), True
 

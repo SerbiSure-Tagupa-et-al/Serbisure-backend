@@ -76,6 +76,37 @@ class ChatOfferTests(APITestCase):
         data['rate_amount'] = '9000'
         self.assertEqual(self.client.post(reverse('booking-chat-offer'), data, format='json', HTTP_IDEMPOTENCY_KEY=self.key).status_code, 400)
 
+    def source_post(self, poster, **updates):
+        values = dict(poster_id=poster, booking_type='short_term', work_setup='stay_out',
+            service_category=['Cleaning'], rate_amount='800', rate_period='day', region='Region X',
+            start_time=timezone.now()+timedelta(days=2))
+        values.update(updates)
+        return tbl_booking.objects.create(**values)
+
+    def test_invalid_key_and_recipient_have_separate_messages(self):
+        self.client.force_authenticate(self.owner)
+        url = reverse('booking-chat-offer')
+        response = self.client.post(url, self.payload(self.worker), format='json',
+            HTTP_IDEMPOTENCY_KEY='booking-offer-123-random')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('request key', str(response.data))
+        self.assertNotIn('recipient', str(response.data))
+        for recipient in (None, '', 'not-a-uuid'):
+            data = {**self.payload(self.worker), 'recipient_id': recipient}
+            response = self.client.post(url, data, format='json', HTTP_IDEMPOTENCY_KEY=self.key)
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('recipient_id', response.data)
+        self.assertFalse(tbl_booking.objects.exists())
+
+    def test_legacy_source_parameter_is_ignored_and_never_links_bookings(self):
+        listing = self.source_post(self.owner, start_time=timezone.now()-timedelta(days=1))
+        response = self.send(self.owner, self.worker, source_post_id=str(listing.pk))
+        self.assertEqual(response.status_code, 201, response.data)
+        listing.refresh_from_db()
+        self.assertEqual(listing.booking_status, 'Pending')
+        self.assertNotIn('source_post', {field.name for field in tbl_booking._meta.fields})
+        self.assertFalse(listing.assignments.exists())
+
     def test_invalid_terms_and_message_failure_do_not_leave_partial_offers(self):
         for field, value in [('rate_amount', '100'), ('work_days', []), ('street', ''), ('daily_end_time', '07:00:00')]:
             response = self.send(self.owner, self.worker, **{field: value})
@@ -118,7 +149,9 @@ class ChatOfferTests(APITestCase):
         self.client.force_authenticate(self.worker)
         self.assertEqual(self.client.get(reverse('booking-my-proposals')).data[0]['booking_id'], str(row.pk))
         self.client.force_authenticate(self.other)
-        self.assertEqual(self.client.get(reverse('booking-my-proposals')).data, [])
+        history = self.client.get(reverse('booking-my-proposals')).data
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]['application_status'], 'not_selected')
 
     def test_restrictions_are_rechecked_at_acceptance_and_offer_stays_pending_on_error(self):
         response = self.send(self.owner, self.worker)
