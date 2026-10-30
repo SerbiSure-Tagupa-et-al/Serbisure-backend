@@ -185,7 +185,7 @@ class AdminDocumentActionView(APIView):
             )
 
             return Response({
-                "message": f"Document marked as Rejected.",
+                "message": "Document marked as Rejected.",
                 "document_id": str(document.document_id),
                 "verification_status": "Rejected",
                 "rejection_reason": rejection_reason
@@ -211,7 +211,7 @@ class AdminReprocessDocumentView(APIView):
             reason="Triggered manual OCR + AI re-processing",
             request=request
         )
-        process_document_async(str(document.document_id))
+        process_document_async(str(document.document_id), force=True)
 
         return Response({
             "message": "Document re-processing queued in background.",

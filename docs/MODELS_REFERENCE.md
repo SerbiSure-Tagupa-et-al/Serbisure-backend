@@ -142,6 +142,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `ocr_discrepancies` | `JSONField` | Blank=True |
 | `ocr_processed_at` | `DateTimeField` | Null=True, Blank=True |
 | `ocr_retry_count` | `PositiveSmallIntegerField` | - |
+| `ocr_processing_token` | `UUIDField` | Null=True, Blank=True |
+| `ocr_last_attempt_at` | `DateTimeField` | Null=True, Blank=True |
 | `rejection_reason` | `TextField` | Null=True, Blank=True |
 | `document_number` | `CharField` | Null=True, Blank=True |
 | `face_liveness_score` | `FloatField` | Null=True, Blank=True |

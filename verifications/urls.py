@@ -1,4 +1,5 @@
 from django.urls import path
+from .views_expiry import ExpiredClearancesView
 from .views import (
     DocumentUploadView,
     UserVerificationStatusView,
@@ -22,6 +23,7 @@ urlpatterns = [
 
     # Admin Web Dashboard Endpoints
     path('admin/queue/', AdminVerificationQueueView.as_view(), name='admin-verification-queue'),
+    path('admin/expired-clearances/', ExpiredClearancesView.as_view(), name='admin-expired-clearances'),
     path('admin/review/<uuid:document_id>/', AdminVerificationReviewView.as_view(), name='admin-verification-review'),
 
     # Admin / Barangay review endpoints

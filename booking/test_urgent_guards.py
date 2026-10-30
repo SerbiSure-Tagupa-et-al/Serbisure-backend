@@ -103,12 +103,12 @@ class EngagementGuardTests(APITestCase):
     def test_cap_is_pair_specific_reverse_direction_and_month_specific(self):
         listing = post(self.worker)
         accept_engagement(listing.pk, self.owner)
-        self.assertEqual(pair_booking_count(self.owner.pk, self.worker.pk), 1)
-        start, _ = month_bounds()
+        self.assertEqual(pair_booking_count(self.owner.pk, self.worker.pk, listing.start_time), 1)
+        start, _ = month_bounds(listing.start_time)
         tbl_booking.objects.filter(pk=listing.pk).update(start_time=start-timedelta(seconds=1))
-        self.assertEqual(pair_booking_count(self.owner.pk, self.worker.pk), 0)
+        self.assertEqual(pair_booking_count(self.owner.pk, self.worker.pk, start), 0)
         accept_engagement(post(self.owner).pk, self.worker)
-        self.assertEqual(pair_booking_count(self.worker.pk, self.owner.pk), 1)
+        self.assertEqual(pair_booking_count(self.worker.pk, self.owner.pk, start), 1)
 
     def test_advance_booking_cannot_evade_service_month_cap(self):
         _, next_month = month_bounds()
@@ -248,7 +248,7 @@ class ConcurrentAcceptanceTests(BookingTransactionTestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(accept, [listing.pk for listing in listings]))
         self.assertCountEqual(results, ['accepted', 'blocked'])
-        self.assertEqual(pair_booking_count(self.owner.pk, self.worker.pk), 3)
+        self.assertEqual(pair_booking_count(self.owner.pk, self.worker.pk, listings[0].start_time), 3)
 
 
 

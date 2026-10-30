@@ -10,7 +10,7 @@ from PIL import Image
 class DocumentUploadTests(APITestCase):
 
     def setUp(self):
-        ocr_patch = patch('verifications.serializers.process_document_ocr', return_value={
+        ocr_patch = patch('verifications.ocr_service.process_document_ocr', return_value={
             'raw_text': '', 'extracted_data': {}, 'match_score': None, 'discrepancies': [],
         })
         ocr_patch.start()

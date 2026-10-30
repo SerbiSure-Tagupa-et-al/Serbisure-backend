@@ -36,7 +36,7 @@ class AdminStatisticsTests(APITestCase):
         self.assertEqual(data['metrics']['totalWorkers'], 1)
         self.assertEqual(data['metrics']['totalHomeowners'], 1)
         self.assertEqual(data['barangays'], [{'name': 'Pagatpat', 'status': 'INACTIVE', 'totalRegistered': 2,
-            'totalWorkers': 1, 'employed': 0, 'available': 1, 'employmentRatio': 0, 'pending': 0, 'verified': 1, 'rejected': 0, 'noDocuments': 1}])
+            'totalWorkers': 1, 'employed': 0, 'available': 1, 'employmentRatio': 0, 'pending': 0, 'verified': 1, 'rejected': 0, 'expired': 0, 'noDocuments': 1}])
         self.assertEqual(self.client.get(self.active).data['active_lgus'], [])
         self.assertEqual(self.client.get(self.active).data['user_barangays'], ['Pagatpat'])
 

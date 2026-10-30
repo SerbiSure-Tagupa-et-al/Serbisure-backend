@@ -172,5 +172,5 @@ def extract_text_with_tesseract(image: Image.Image) -> str:
 
     processed = preprocess_image_for_ocr(image)
     custom_config = r"--oem 3 --psm 6"
-    text = pytesseract.image_to_string(processed, lang="eng", config=custom_config)
+    text = pytesseract.image_to_string(processed, lang="eng", config=custom_config, timeout=20)
     return text.strip()

@@ -13,21 +13,33 @@ REQUIRED_DOCUMENTS = {
 SERVICES = ('Cleaning', 'Cooking', 'Child_care', 'Caregiver', 'Laundry', 'All-around')
 
 
-def credential_snapshot(user, today=None):
-    """Use the latest submission of each required credential, never an old approval."""
+def latest_required_documents(user):
     required = REQUIRED_DOCUMENTS.get(user.account_type, ())
     latest = {}
     for doc in sorted(user.documents.all(), key=lambda doc: (doc.created_at, str(doc.pk))):
         if doc.document_type in required:
             latest[doc.document_type] = doc
-    docs = [latest[kind] for kind in required if kind in latest]
+    return list(latest.values())
+
+
+def document_is_expired(doc, today=None):
+    today = today or timezone.localdate(timezone=PH_TIME)
+    return bool(doc.valid_until and doc.valid_until < today)
+
+
+def credential_snapshot(user, today=None):
+    """Use the latest submission of each required credential, never an old approval."""
+    required = REQUIRED_DOCUMENTS.get(user.account_type, ())
+    docs = latest_required_documents(user)
     expiries = [doc.valid_until for doc in docs if doc.valid_until]
     valid_until = min(expiries) if expiries else None
     complete = bool(required) and len(docs) == len(required)
     approved = complete and all(doc.verification_status == 'Verified' for doc in docs)
     today = today or timezone.localdate(timezone=PH_TIME)
-    if any(doc.verification_status == 'Rejected' or (doc.valid_until and doc.valid_until < today) for doc in docs):
+    if any(doc.verification_status == 'Rejected' for doc in docs):
         status = 'rejected'
+    elif any(document_is_expired(doc, today) for doc in docs):
+        status = 'expired'
     elif approved:
         status = 'verified'
     elif any(doc.verification_status in ('Pending', 'Verified') for doc in docs):

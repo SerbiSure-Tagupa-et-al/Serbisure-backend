@@ -63,7 +63,9 @@ def get_groq_client() -> Groq | None:
     if not api_key:
         logger.warning("[GroqService] GROQ_API_KEY is not set in environment.")
         return None
-    return Groq(api_key=api_key)
+    # Keep each attempt bounded so the document processing lease can expire
+    # safely after a server restart. Model fallbacks already supply retries.
+    return Groq(api_key=api_key, timeout=30.0, max_retries=0)
 
 
 def build_system_prompt(document_type: str) -> str:

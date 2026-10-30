@@ -88,7 +88,6 @@ class UserRegistrationView(APIView):
 
             user = serializer.save()
 
-            from rest_framework_simplejwt.tokens import RefreshToken
             refresh = CustomLoginSerializer.get_token(user)
 
             response_data = {
@@ -181,7 +180,6 @@ class CustomLoginView(TokenObtainPairView):
         raise Throttled(detail=custom_message)
 
 from rest_framework import generics
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from .serializers import ProfileImageUploadSerializer
 
@@ -352,7 +350,6 @@ class AdminDashboardActivityView(APIView):
         barangay_param = request.query_params.get('barangay')
         from booking.models import tbl_booking, tbl_booking_assignment
         from django.db.models import Q
-        import cloudinary.utils
 
         # Get bookings ordered by most recent first
         bookings_qs = tbl_booking.objects.select_related('poster_id').order_by('-createdAt')
@@ -501,7 +498,7 @@ class AdminVerificationStatusStatsView(APIView):
         users = tbl_user_profile.objects.filter(account_type__in=['Kasambahay', 'Homeowner'], is_active=True).prefetch_related('documents')
         if role != 'All Roles':
             users = users.filter(account_type=role)
-        counts = dict(verified=0, pending=0, unverified=0, rejected=0)
+        counts = dict(verified=0, pending=0, unverified=0, rejected=0, expired=0)
         for user in users:
             if matches_scope(user.barangay, scope):
                 counts[credential_snapshot(user)[0]] += 1
@@ -697,7 +694,7 @@ class AdminActiveBarangaysView(APIView):
                 {'error': error_msg},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        except Exception as e:
+        except Exception:
             return Response(
                 {'error': f"Unable to register Barangay {clean_b}. Please verify the form details and try again."},
                 status=status.HTTP_400_BAD_REQUEST
