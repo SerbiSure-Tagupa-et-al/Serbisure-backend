@@ -44,7 +44,6 @@ def create_uploaded_document(user, image_file, document_data):
         'ocr_retry_count': 0,
         'ocr_processing_token': None,
         'ocr_last_attempt_at': None,
-        'face_liveness_score': None,
     }
     with transaction.atomic():
         current = tbl_documents.objects.filter(

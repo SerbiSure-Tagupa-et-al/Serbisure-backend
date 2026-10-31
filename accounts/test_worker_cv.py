@@ -124,15 +124,14 @@ class WorkerCvTests(APITestCase):
         self.assertEqual(self.details.work_setup, 'stay_in')
         self.assertEqual(self.details.civil_status, 'Married')
 
-    def test_manual_resume_upload_is_retired_and_old_files_are_not_shared(self):
-        self.worker.resume_url = 'legacy-private-file.pdf'
-        self.worker.save(update_fields=['resume_url'])
-        response = self.client.patch(reverse('kasambahay-resume'), {}, format='json')
-        self.assertEqual(response.status_code, 405)
+    def test_uploaded_resume_route_and_profile_fields_are_retired(self):
+        response = self.client.patch('/api/v1/accounts/resume/', {}, format='json')
+        self.assertEqual(response.status_code, 404)
         self.client.force_authenticate(self.owner)
         public = self.client.get(reverse('public-profile', args=[self.worker.pk]))
         self.assertEqual(public.status_code, 200)
-        self.assertIsNone(public.data['resume_url'])
+        self.assertNotIn('resume_url', public.data)
+        self.assertNotIn('resume_uploaded_at', public.data)
 
     def test_legacy_profile_has_cv_without_inventing_experience_or_salary(self):
         self.details.delete()

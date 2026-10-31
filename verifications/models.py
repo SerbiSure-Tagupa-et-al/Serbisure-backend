@@ -129,10 +129,6 @@ class tbl_documents(models.Model):
         null=True
     )
 
-    face_liveness_score = models.FloatField(
-        blank=True,
-        null=True
-    )
 
     @property
     def ocr_extracted_data(self):
