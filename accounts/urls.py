@@ -12,7 +12,6 @@ from .views import (
     UserSocialLinksView,
     JobStatusView,
     PublicProfileView,
-    KasambahayResumeView,
     ChangePasswordView,
     UserSearchView,
     DeleteAccountView,
@@ -70,9 +69,6 @@ urlpatterns = [
 
     # Export User Data Endpoint (Tier 3-5)
     path('export-data/', ExportUserDataView.as_view(), name='export-data'),
-
-    # Kasambahay Resume Endpoint
-    path('resume/', KasambahayResumeView.as_view(), name='kasambahay-resume'),
 
     # Change Password Endpoint
     path('change-password/', ChangePasswordView.as_view(), name='change-password'),

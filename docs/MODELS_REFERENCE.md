@@ -104,8 +104,6 @@ This document outlines the database schema, models, field types, and choices (en
 | `gender` | `CharField` | Null=True, Blank=True, Choices: ['Male', 'Female', 'Other'] |
 | `language` | `CharField` | Null=True, Blank=True |
 | `profile_link` | `CharField` | Null=True, Blank=True |
-| `resume_url` | `CharField` | Null=True, Blank=True |
-| `resume_uploaded_at` | `DateTimeField` | Null=True, Blank=True |
 | `account_type` | `CharField` | Choices: ['Kasambahay', 'Homeowner', 'Barangay', 'Admin'] |
 | `contact_number` | `CharField` | Unique |
 | `show_contact_number` | `BooleanField` | - |
@@ -146,7 +144,6 @@ This document outlines the database schema, models, field types, and choices (en
 | `ocr_last_attempt_at` | `DateTimeField` | Null=True, Blank=True |
 | `rejection_reason` | `TextField` | Null=True, Blank=True |
 | `document_number` | `CharField` | Null=True, Blank=True |
-| `face_liveness_score` | `FloatField` | Null=True, Blank=True |
 | `created_at` | `DateTimeField` | Blank=True |
 
 ### `tbl_audit_logs`
@@ -337,5 +334,4 @@ This document outlines the database schema, models, field types, and choices (en
 | `message` | `ForeignKey` | FK -> `tbl_chat_message` |
 | `reactor` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `emoji` | `CharField` | - |
-| `reacted_at` | `DateTimeField` | Blank=True |
 

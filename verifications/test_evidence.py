@@ -1,6 +1,4 @@
-from types import SimpleNamespace
 from unittest.mock import patch
-from importlib import import_module
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 from .models import tbl_documents
@@ -96,7 +94,6 @@ class VerificationEvidenceTests(APITestCase):
 
     def test_ocr_and_missing_measurement_never_become_facial_score(self):
         self.front.ocr_match_score = 97.5
-        self.front.face_liveness_score = 99.2
         data = AdminVerificationQueueSerializer(self.front).data
         self.assertEqual(data['ocrMatchScore'], 97.5)
         self.assertIsNone(data['faceLivenessMatchScore'])
@@ -114,20 +111,3 @@ class VerificationEvidenceTests(APITestCase):
         self.assertEqual(result['match_score'], expected)
         self.assertNotEqual(result['match_score'], 99.8)
         self.assertIsNone(result['document_number'])
-
-    def test_legacy_score_migration_preserves_percentages_and_clears_fake_biometrics(self):
-        from django.apps import apps
-        from django.db import connection
-        self.front.ocr_match_score = .85
-        self.front.face_liveness_score = 99.2
-        self.front.save()
-        self.back.ocr_match_score = 95.0
-        self.back.save()
-        migration = import_module('verifications.migrations.0009_normalize_document_scores')
-        migration.normalize_scores(apps, SimpleNamespace(connection=connection))
-        self.front.refresh_from_db()
-        self.back.refresh_from_db()
-        self.assertEqual(self.front.ocr_match_score, 85.0)
-        self.assertEqual(self.back.ocr_match_score, 95.0)
-        self.assertIsNone(self.front.face_liveness_score)
-

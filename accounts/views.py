@@ -11,7 +11,6 @@ from .serializers import (
     UserSocialLinksSerializer,
     JobStatusSerializer,
     PublicProfileSerializer,
-    KasambahayResumeSerializer,
 )
 from .permissions import IsKasambahay, IsPortalAdmin, IsPortalSuperadmin
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -874,14 +873,6 @@ class PublicProfileView(generics.RetrieveAPIView):
     queryset = tbl_user_profile.objects.filter(is_active=True)
 
 
-class KasambahayResumeView(generics.RetrieveAPIView):
-    """Owner-only access to old uploaded files; new CVs use worker-cv exports."""
-    permission_classes = [IsAuthenticated, IsKasambahay]
-    serializer_class = KasambahayResumeSerializer
-    http_method_names = ['get', 'head', 'options']
-
-    def get_object(self):
-        return self.request.user
 
 
 class ChangePasswordView(APIView):

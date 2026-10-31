@@ -230,7 +230,6 @@ class tbl_chat_reaction(models.Model):
         db_column='reactor_id'
     )
     emoji = models.CharField(max_length=10)
-    reacted_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'tbl_chat_reaction'
