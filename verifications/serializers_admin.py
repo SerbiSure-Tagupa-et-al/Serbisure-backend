@@ -2,7 +2,6 @@ from rest_framework import serializers
 from .models import tbl_documents, tbl_audit_logs
 from accounts.models import tbl_user_profile
 from core.utils import get_signed_cloudinary_url
-import cloudinary.utils
 
 
 class UserProfileSnippetSerializer(serializers.ModelSerializer):
@@ -60,6 +59,8 @@ class AdminDocumentActionSerializer(serializers.Serializer):
 
 class UserDocumentStatusSerializer(serializers.ModelSerializer):
     document_image_url = serializers.SerializerMethodField()
+    is_expired = serializers.SerializerMethodField()
+    can_replace = serializers.SerializerMethodField()
 
     class Meta:
         model = tbl_documents
@@ -70,6 +71,8 @@ class UserDocumentStatusSerializer(serializers.ModelSerializer):
             'document_image_url',
             'date_issued',
             'valid_until',
+            'is_expired',
+            'can_replace',
             'extracted_data',
             'ocr_match_score',
             'ocr_discrepancies',
@@ -81,6 +84,14 @@ class UserDocumentStatusSerializer(serializers.ModelSerializer):
 
     def get_document_image_url(self, instance):
         return get_signed_cloudinary_url(instance.document_url, as_avatar=False)
+
+    def get_is_expired(self, instance):
+        from accounts.workforce import document_is_expired
+        return document_is_expired(instance)
+
+    def get_can_replace(self, instance):
+        from .services.document_upload import document_can_be_replaced
+        return document_can_be_replaced(instance)
 
 
 class AdminAuditLogSerializer(serializers.ModelSerializer):

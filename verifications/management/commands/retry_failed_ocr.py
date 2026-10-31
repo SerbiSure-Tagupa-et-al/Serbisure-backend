@@ -3,7 +3,7 @@ from datetime import timedelta
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 from verifications.models import tbl_documents
-from verifications.services.document_processor import process_document, process_document_async
+from verifications.services.document_processor import document_needs_retry, process_document, process_document_async
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,7 @@ class Command(BaseCommand):
             .order_by("created_at")[:limit]
         )
 
+        stuck_docs = [doc for doc in stuck_docs if document_needs_retry(doc, now=now, max_retries=max_retries)]
         stuck_count = len(stuck_docs)
         if stuck_count == 0:
             self.stdout.write(self.style.SUCCESS("No stuck documents found. Everything is up to date!"))
@@ -114,16 +115,18 @@ class Command(BaseCommand):
                 continue
 
             try:
-                doc.ocr_retry_count = new_retry_count
-                doc.save(update_fields=["ocr_retry_count"])
-
                 if use_async:
-                    process_document_async(doc_id_str)
-                    self.stdout.write(self.style.SUCCESS("   Enqueued in background thread."))
+                    result = process_document_async(doc_id_str, retry=True, max_retries=max_retries)
                 else:
-                    process_document(doc_id_str)
-                    self.stdout.write(self.style.SUCCESS("   Processed successfully."))
-
+                    result = process_document(doc_id_str, retry=True, max_retries=max_retries)
+                if result is None:
+                    self.stdout.write(self.style.NOTICE("   Skipped: another attempt already owns this document."))
+                    continue
+                if result is False:
+                    failed += 1
+                    self.stdout.write(self.style.WARNING("   Analysis failed; upload remains available for review."))
+                    continue
+                self.stdout.write(self.style.SUCCESS("   Enqueued in background thread." if use_async else "   Processed successfully."))
                 retried += 1
             except Exception as exc:
                 failed += 1

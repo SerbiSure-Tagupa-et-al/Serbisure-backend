@@ -18,7 +18,7 @@ from .serializers import (
 from .serializers import BookingCancellationSerializer
 from .cancellation import cancel_booking, cancellation_preview, SAFETY_REASON
 from accounts.penalties import assert_booking_unrestricted, penalty_status
-from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal, tbl_saved_post
+from .models import tbl_booking, tbl_booking_proposal, tbl_saved_post
 from reviews.models import tbl_review
 from django.core.cache import cache
 from django.db.models import Q, Avg, Prefetch
@@ -30,6 +30,10 @@ from .services import accept_engagement, create_proposal
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from uuid import UUID
+from .availability import available_public_posts, with_post_state
+from .serializers import ApplicationPostSerializer, RepostScheduleSerializer
+from .reposting import repost_public_post
 import math 
 
 User = get_user_model()
@@ -102,7 +106,7 @@ class BookingFeedView(generics.ListAPIView):
 
     def get_queryset(self):
         current_user = self.request.user
-        queryset = tbl_booking.objects.select_related('poster_id').filter(booking_status='Pending', rate_needs_review=False, poster_id__is_active=True, recipient_id__isnull=True)
+        queryset = available_public_posts(tbl_booking.objects.select_related('poster_id'))
 
         if current_user.account_type == 'Homeowner':
             queryset = queryset.filter(poster_id__account_type='Kasambahay')
@@ -156,7 +160,7 @@ class BookingFeedView(generics.ListAPIView):
                 raise ValidationError({'work_setup': 'Choose stay_in or stay_out.'})
             queryset = queryset.filter(work_setup=setup_param)
 
-        if params.get('max_rate') or params.get('min_rate') or params.get('sort') in ['rate_asc', 'rate_desc']:
+        if params.get('max_rate') or params.get('min_rate') or params.get('rate_period'):
             period = params.get('rate_period')
             if period not in ('day', 'month'):
                 raise ValidationError({'rate_period': 'Choose day or month when filtering or sorting compensation.'})
@@ -222,15 +226,7 @@ class BookingFeedView(generics.ListAPIView):
             )
 
         # 6. Sorting
-        sort = params.get('sort', 'newest')
-        if sort == 'rate_asc':
-            queryset = queryset.order_by('rate_amount')
-        elif sort == 'rate_desc':
-            queryset = queryset.order_by('-rate_amount')
-        elif sort == 'oldest':
-            queryset = queryset.order_by('createdAt')
-        else:
-            queryset = queryset.order_by('-createdAt')
+        queryset = queryset.order_by('-createdAt', '-booking_id')
 
         return queryset
 
@@ -246,9 +242,7 @@ class PublicPendingPostsView(generics.ListAPIView):
         if not User.objects.filter(id=poster_id, is_active=True,
                                    account_type__in=['Homeowner', 'Kasambahay']).exists():
             raise NotFound('Profile not found.')
-        return tbl_booking.objects.filter(
-            poster_id=poster_id, booking_status='Pending', recipient_id__isnull=True
-        ).select_related('poster_id').prefetch_related(Prefetch(
+        return available_public_posts(tbl_booking.objects.filter(poster_id=poster_id)).select_related('poster_id').prefetch_related(Prefetch(
             'proposals',
             queryset=tbl_booking_proposal.objects.filter(
                 proposer_id=self.request.user
@@ -401,7 +395,8 @@ class BookingCancelView(APIView):
         serializer = BookingCancellationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         booking, actor, changed = cancel_booking(booking_id, request.user,
-            serializer.validated_data['reason'], serializer.validated_data.get('expected_points'))
+            serializer.validated_data['reason'], serializer.validated_data.get('expected_points'),
+            pending_only=serializer.validated_data['pending_only'])
         return Response({
             'message': 'Booking has been cancelled.',
             'booking': BookingDetailSerializer(booking, context={'request': request}).data,
@@ -427,7 +422,12 @@ class MyBookingsView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        qs = tbl_booking.objects.filter(poster_id=user).select_related('poster_id').order_by('-createdAt')
+        qs = with_post_state(tbl_booking.objects.filter(poster_id=user)).select_related('poster_id').order_by('-createdAt')
+        public_only = self.request.query_params.get('public_only')
+        if public_only not in (None, 'true', 'false'):
+            raise ValidationError({'public_only': 'Use true or false.'})
+        if public_only == 'true':
+            qs = qs.filter(recipient_id__isnull=True)
 
         status_param = self.request.query_params.get('status', '').strip().lower()
         if status_param == 'active':
@@ -481,18 +481,28 @@ class BookingProposalCreateView(APIView):
 
     @transaction.atomic
     def post(self, request, booking_id):
+        apply_at_posted_rate = request.data.get('apply_at_posted_rate', False)
+        if not isinstance(apply_at_posted_rate, bool):
+            raise ValidationError({'apply_at_posted_rate': 'Use true or false.'})
         message = str(request.data.get('message') or '').strip()
         if len(message) > 500:
             raise ValidationError({'message': 'Proposal message cannot exceed 500 characters.'})
-        if 'rate_period' not in request.data:
+        if not apply_at_posted_rate and 'rate_period' not in request.data:
             raise ValidationError({'rate_period': 'Specify day or month for the proposed amount.'})
-        proposal = create_proposal(booking_id, request.user, request.data.get('proposed_rate'),
-                                   request.data.get('rate_period'), message)
+        proposal, created = create_proposal(booking_id, request.user, request.data.get('proposed_rate'),
+                                           request.data.get('rate_period'), message,
+                                           apply_at_posted_rate=apply_at_posted_rate)
+        if not created:
+            return Response({'message': 'Application already submitted.',
+                             'proposal': BookingProposalSerializer(proposal).data, 'already_applied': True})
         booking = proposal.booking_id
         from chat.models import tbl_chat_message
         tbl_chat_message.objects.create(sender_id=request.user, receiver_id=booking.poster_id,
             booking_id=booking, booking_proposal=proposal, is_booking_offer=True,
             message_payload='Booking proposal: review the proposed compensation and post terms.')
+        if apply_at_posted_rate:
+            tbl_chat_message.objects.create(sender_id=request.user, receiver_id=booking.poster_id,
+                booking_id=booking, message_payload=proposal.message or 'I am interested in this job position')
         name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
         action = 'applied for your job' if booking.poster_id.account_type == 'Homeowner' else 'sent a hiring offer for your service'
         send_in_app_notification(receiver=booking.poster_id, sender=request.user,
@@ -507,14 +517,17 @@ class MyProposalBookingsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        rows = tbl_booking_proposal.objects.filter(proposer_id=request.user, status__in=['Pending', 'Accepted']).select_related('booking_id', 'booking_id__poster_id').order_by('-createdAt')
-        seen = set()
-        bookings = []
+        rows = tbl_booking_proposal.objects.filter(proposer_id=request.user).order_by('-createdAt')
+        latest = {}
         for proposal in rows:
-            if proposal.booking_id_id not in seen:
-                seen.add(proposal.booking_id_id)
-                bookings.append(proposal.booking_id)
-        return Response(BookingFeedSerializer(bookings, many=True, context={'request': request}).data)
+            latest.setdefault(proposal.booking_id_id, proposal)
+        listings = {row.pk: row for row in with_post_state(tbl_booking.objects.filter(pk__in=latest)).select_related('poster_id')}
+        bookings = []
+        for booking_id, proposal in latest.items():
+            listing = listings[booking_id]
+            listing.viewer_application = proposal
+            bookings.append(listing)
+        return Response(ApplicationPostSerializer(bookings, many=True, context={'request': request}).data)
 
 
 class BookingProposalListView(generics.ListAPIView):
@@ -598,7 +611,7 @@ class BookingProposalRespondView(APIView):
             send_in_app_notification(
                 receiver=proposal.proposer_id,
                 sender=request.user,
-                message=f"Your counter-offer for booking was declined."
+                message="Your counter-offer for booking was declined."
             )
 
             return Response({
@@ -621,7 +634,8 @@ class BookingRecommendationsView(APIView):
 
         if user.account_type == 'Homeowner':
             # Recommend workers
-            workers = User.objects.filter(account_type='Kasambahay', is_active=True).exclude(id=user.id)
+            workers = User.objects.filter(account_type='Kasambahay', is_active=True,
+                pk__in=available_public_posts().values('poster_id')).exclude(id=user.id)
             user_location = (user.city or user.province or '').lower()
 
             scored_workers = []
@@ -654,7 +668,7 @@ class BookingRecommendationsView(APIView):
                     'role': 'Kasambahay',
                     'match_score': min(score, 100),
                     'rating': round(rating_val, 1),
-                    'location': f"{w.city or ''}, {w.province or ''}".strip(', ') or 'Philippines',
+                    'location': f"{w.city or ''}, {w.province or ''}".strip(', ') or '',
                     'tags': w.user_tags or [],
                     'avatar': get_signed_avatar(w),
                     'verification_status': w.verification_status,
@@ -665,10 +679,9 @@ class BookingRecommendationsView(APIView):
 
         else:
             # Kasambahay: Recommend open Pending jobs from Homeowners
-            pending_jobs = tbl_booking.objects.filter(
-                booking_status='Pending', recipient_id__isnull=True,
+            pending_jobs = available_public_posts(tbl_booking.objects.filter(
                 poster_id__account_type='Homeowner'
-            ).select_related('poster_id')
+            )).select_related('poster_id')
 
             user_tags = [t.lower() for t in (user.user_tags or [])]
             user_loc = (user.city or user.province or '').lower()
@@ -695,7 +708,7 @@ class BookingRecommendationsView(APIView):
                 from .serializers import get_signed_avatar
                 p_first = job.poster_id.first_name or ''
                 p_last = job.poster_id.last_name or ''
-                display_loc = f"{job.barangay}, {job.city}" if (job.barangay and job.city) else (job.full_address or 'Cagayan de Oro')
+                display_loc = f"{job.barangay}, {job.city}" if (job.barangay and job.city) else (job.full_address or '')
                 scored_jobs.append({
                     'booking_id': str(job.booking_id),
                     'title': ", ".join(job.service_category) if isinstance(job.service_category, list) else str(job.service_category),
@@ -838,6 +851,21 @@ class BookingRateReviewView(APIView):
         booking.save(update_fields=['rate_amount', 'rate_needs_review'])
         booking.proposals.filter(status='Pending').update(status='Rejected')
         return Response(BookingDetailSerializer(booking, context={'request': request}).data)
+
+
+class BookingRepostView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [BookingThrottle]
+
+    def post(self, request, booking_id):
+        try:
+            key = UUID(request.headers.get('Idempotency-Key', ''))
+        except (ValueError, TypeError, AttributeError):
+            raise ValidationError({'detail': 'A valid UUID Idempotency-Key is required to repost.'})
+        serializer = RepostScheduleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        listing, created = repost_public_post(booking_id, request.user, serializer.validated_data, key)
+        return Response(BookingDetailSerializer(listing, context={'request': request}).data, status=201 if created else 200)
 
 
 class BookingContractTemplateView(APIView):

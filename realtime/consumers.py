@@ -8,7 +8,7 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
 from accounts.authentication import AccountJWTAuthentication as JWTAuthentication
 
-from .events import user_group
+from .events import user_group, FEED_GROUP
 from .presence import allowed_presence_ids, is_online, presence_group, update_presence, PRESENCE_TTL
 
 logger = logging.getLogger(__name__)
@@ -102,6 +102,7 @@ class UserEventsConsumer(AsyncWebsocketConsumer):
             self.auth_task.cancel()
             self.group = user_group(self.user_id)
             await self.channel_layer.group_add(self.group, self.channel_name)
+            await self.channel_layer.group_add(FEED_GROUP, self.channel_name)
             self.expiry_task = asyncio.create_task(self.close_after(self.expires - time.time(), 4401))
             self.last_check = time.monotonic()
             self.presence_registered = True
@@ -113,6 +114,7 @@ class UserEventsConsumer(AsyncWebsocketConsumer):
         if content.get('type') == 'ping':
             await self.broadcast_presence(True)
             await self.channel_layer.group_add(self.group, self.channel_name)
+            await self.channel_layer.group_add(FEED_GROUP, self.channel_name)
             await self.send(text_data=json.dumps({'type': 'pong'}))
             await self.watch_presence(list(self.watched_presence))
         elif content.get('type') == 'presence.watch':
@@ -176,6 +178,7 @@ class UserEventsConsumer(AsyncWebsocketConsumer):
                 task.cancel()
         if self.group:
             await self.channel_layer.group_discard(self.group, self.channel_name)
+            await self.channel_layer.group_discard(FEED_GROUP, self.channel_name)
         for partner_id in self.watched_presence:
             await self.channel_layer.group_discard(presence_group(partner_id), self.channel_name)
         if self.presence_registered:

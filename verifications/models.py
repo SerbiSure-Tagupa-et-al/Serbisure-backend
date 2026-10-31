@@ -114,6 +114,9 @@ class tbl_documents(models.Model):
         help_text="Number of times OCR processing has been retried"
     )
 
+    ocr_processing_token = models.UUIDField(null=True, blank=True, editable=False)
+    ocr_last_attempt_at = models.DateTimeField(null=True, blank=True, editable=False)
+
     rejection_reason = models.TextField(
         blank=True,
         null=True,

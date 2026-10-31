@@ -25,6 +25,7 @@ class PenaltyQuery(serializers.Serializer):
     points = serializers.ChoiceField(choices=['with_penalties', '0', '1', '2', '3'], required=False)
     user_id = serializers.UUIDField(required=False)
     page = serializers.IntegerField(required=False, min_value=1)
+    page_size = serializers.IntegerField(required=False, min_value=1, max_value=100)
 
 
 class AdjustmentInput(serializers.Serializer):
@@ -102,7 +103,8 @@ class PenaltyThrottle(UserRateThrottle):
 
 
 class PenaltyPagination(PageNumberPagination):
-    page_size = 10
+    page_size = 5
+    page_size_query_param = 'page_size'
 
 
 class PenaltyView(APIView):

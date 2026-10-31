@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError
 from django.db.models.expressions import RawSQL
 from .penalties import current_penalty_month
 import uuid 
-from .penalty_models import PenaltyAdjustment  # Register the feature model with this app.
+from .penalty_models import PenaltyAdjustment as PenaltyAdjustment  # Register and re-export the feature model.
 
 
 class tbl_worker_status_history(models.Model):
@@ -332,7 +332,8 @@ class tbl_user_profile(AbstractUser):
         - Homeowner: Verified when BOTH 'national_id_front' and 'national_id_back' are Verified.
         - Kasambahay: Verified when BOTH 'nbi_clearance' and 'police_clearance' are Verified.
         - Admin / Barangay: Automatically 'Verified'.
-        - Otherwise: 'Pending' if any document is Pending, 'Rejected' if any is Rejected, else 'Unverified'.
+        - Only the latest required submissions count; expired credentials are not Verified.
+        - Expired eligibility maps to Unverified for mobile API compatibility.
         """
         if hasattr(self, '_override_verification_status') and self._override_verification_status is not None:
             return self._override_verification_status
@@ -340,38 +341,12 @@ class tbl_user_profile(AbstractUser):
         if self.account_type in ['Admin', 'Barangay']:
             return 'Verified'
 
-        try:
-            user_docs = list(self.documents.all())
-        except Exception:
-            return 'Unverified'
-
-        if not user_docs:
-            return 'Unverified'
-
-        verified_types = {
-            doc.document_type
-            for doc in user_docs
-            if doc.verification_status == 'Verified'
-        }
-
-        if self.account_type == 'Homeowner':
-            # Homeowner requires both front and back of the National ID (or legacy single 'national_id')
-            if {'national_id_front', 'national_id_back'}.issubset(verified_types) or 'national_id' in verified_types:
-                return 'Verified'
-        elif self.account_type == 'Kasambahay':
-            required = {'nbi_clearance', 'police_clearance'}
-            if required.issubset(verified_types):
-                return 'Verified'
-
-        doc_statuses = {doc.verification_status for doc in user_docs}
-        if 'Rejected' in doc_statuses:
-            return 'Rejected'
-        if 'Pending' in doc_statuses:
-            return 'Pending'
-        if len(verified_types) > 0:
-            return 'Pending'
-
-        return 'Unverified'
+        from .workforce import credential_snapshot
+        # Keep the mobile API's existing enum. Expired credentials remove job
+        # eligibility immediately, without changing a document's review decision.
+        status = credential_snapshot(self)[0]
+        return {'verified': 'Verified', 'pending': 'Pending', 'rejected': 'Rejected',
+                'expired': 'Unverified', 'unverified': 'Unverified'}[status]
 
     @verification_status.setter
     def verification_status(self, value):

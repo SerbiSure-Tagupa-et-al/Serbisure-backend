@@ -191,6 +191,44 @@ class RealtimeTests(TransactionTestCase):
             await socket.disconnect()
         async_to_sync(scenario)()
 
+    def test_feed_viewers_receive_only_committed_public_availability(self):
+        async def scenario():
+            viewer = await self.connect()  # Not a participant in either booking.
+            def create(**extra):
+                return tbl_booking.objects.create(poster_id=self.partner, booking_type='short_term',
+                    service_category=['Cleaning'], rate_amount=800, rate_period='day',
+                    start_time=timezone.now()+timedelta(days=2), **extra)
+            public = await database_sync_to_async(create)()
+            self.assertEqual(await viewer.receive_json_from(), {
+                'type': 'feed.changed', 'booking_id': str(public.pk), 'available': True,
+            })
+            await database_sync_to_async(create)(recipient_id=self.partner, special_instruction='Private offer terms')
+            def rollback():
+                try:
+                    with transaction.atomic():
+                        create()
+                        raise ValueError('Rollback')
+                except ValueError:
+                    pass
+            await database_sync_to_async(rollback)()
+            self.assertTrue(await viewer.receive_nothing(timeout=0.1))
+            def expire():
+                public.start_time = timezone.now()-timedelta(seconds=1)
+                public.save(update_fields=['start_time'])
+            await database_sync_to_async(expire)()
+            self.assertEqual(await viewer.receive_json_from(), {
+                'type': 'feed.changed', 'booking_id': str(public.pk), 'available': True,
+            })
+            def cancel():
+                public.booking_status = 'Cancelled'
+                public.save(update_fields=['booking_status'])
+            await database_sync_to_async(cancel)()
+            self.assertEqual(await viewer.receive_json_from(), {
+                'type': 'feed.changed', 'booking_id': str(public.pk), 'available': False,
+            })
+            await viewer.disconnect()
+        async_to_sync(scenario)()
+
     def test_invalid_expired_and_inactive_tokens_rejected(self):
         expired = AccessToken.for_user(self.user); expired.set_exp(lifetime=timedelta(seconds=-1))
         inactive_token = AccessToken.for_user(self.partner)
@@ -270,8 +308,8 @@ class RealtimeTests(TransactionTestCase):
         async def scenario():
             socket = await self.connect(self.partner_token)
             await database_sync_to_async(tbl_booking_assignment.objects.create)(booking_id=booking, accepter_id=self.partner)
-            events = [await socket.receive_json_from(), await socket.receive_json_from()]
-            self.assertEqual({event['type'] for event in events}, {'booking.changed', 'chat.changed'})
+            events = [await socket.receive_json_from() for _ in range(3)]
+            self.assertEqual({event['type'] for event in events}, {'feed.changed', 'booking.changed', 'chat.changed'})
             self.assertEqual(next(event for event in events if event['type'] == 'booking.changed')['booking_id'], str(booking.pk))
             await socket.disconnect()
         async_to_sync(scenario)()

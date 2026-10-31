@@ -19,7 +19,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.exceptions import Throttled
 from django.core.cache import cache
-from django.db.models import Q
+from django.db.models import Q, Count
 from core.utils import check_valid_uuid, get_signed_cloudinary_url, normalize_ph_phone_number
 import math
 import re
@@ -88,7 +88,6 @@ class UserRegistrationView(APIView):
 
             user = serializer.save()
 
-            from rest_framework_simplejwt.tokens import RefreshToken
             refresh = CustomLoginSerializer.get_token(user)
 
             response_data = {
@@ -181,7 +180,6 @@ class CustomLoginView(TokenObtainPairView):
         raise Throttled(detail=custom_message)
 
 from rest_framework import generics
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from .serializers import ProfileImageUploadSerializer
 
@@ -240,6 +238,14 @@ class AdminUserListView(generics.ListAPIView):
                     Q(street__icontains=barangay_param)
                 )
 
+        users_qs = users_qs.annotate(
+            completed_posted_count=Count('user_post', filter=Q(user_post__booking_status='Completed'), distinct=True),
+            completed_assigned_count=Count('accepted_bookings__booking_id', filter=Q(accepted_bookings__booking_id__booking_status='Completed'), distinct=True),
+            review_count=Count('reviews_received', distinct=True),
+            positive_count=Count('reviews_received', filter=Q(reviews_received__nlp_sentiment='Positive'), distinct=True),
+            neutral_count=Count('reviews_received', filter=Q(reviews_received__nlp_sentiment='Neutral'), distinct=True),
+            negative_count=Count('reviews_received', filter=Q(reviews_received__nlp_sentiment='Negative'), distinct=True),
+        )
         data = []
         for u in users_qs:
             if manage_access:
@@ -295,22 +301,22 @@ class AdminUserListView(generics.ListAPIView):
                 "role": role_norm,
                 "avatar": avatar,
                 "email": u.email,
-                "contactNumber": u.contact_number or "+639123456789",
-                "address": f"{u.street or ''}, {u.city or 'Cagayan de Oro City'}".strip(', '),
+                "contactNumber": u.contact_number or "",
+                "address": ', '.join(part for part in [u.street, u.city] if part),
                 "barangay": brgy,
-                "city": u.city or "Cagayan de Oro City",
+                "city": u.city or "",
                 "verified": is_verified,
                 "hasLguCoverage": has_lgu_coverage,
                 "status": "ACTIVE" if u.is_active and not u.is_account_suspended else "SUSPENDED",
                 "canManageSuspension": may_manage(request.user, u),
                 "joinedDate": u.date_joined.strftime('%b %d, %Y') if u.date_joined else "Recent",
-                "completedJobs": 0,
+                "completedJobs": u.completed_posted_count + u.completed_assigned_count,
                 "sentimentScore": {
-                    "positive": 95,
-                    "neutral": 5,
-                    "negative": 0
+                    "positive": round(u.positive_count * 100 / u.review_count) if u.review_count else 0,
+                    "neutral": round(u.neutral_count * 100 / u.review_count) if u.review_count else 0,
+                    "negative": round(u.negative_count * 100 / u.review_count) if u.review_count else 0,
                 },
-                "ra10361Compliant": True,
+                "ra10361Compliant": None,
             }
             if manage_access:
                 user_item.update({
@@ -352,7 +358,6 @@ class AdminDashboardActivityView(APIView):
         barangay_param = request.query_params.get('barangay')
         from booking.models import tbl_booking, tbl_booking_assignment
         from django.db.models import Q
-        import cloudinary.utils
 
         # Get bookings ordered by most recent first
         bookings_qs = tbl_booking.objects.select_related('poster_id').order_by('-createdAt')
@@ -501,7 +506,7 @@ class AdminVerificationStatusStatsView(APIView):
         users = tbl_user_profile.objects.filter(account_type__in=['Kasambahay', 'Homeowner'], is_active=True).prefetch_related('documents')
         if role != 'All Roles':
             users = users.filter(account_type=role)
-        counts = dict(verified=0, pending=0, unverified=0, rejected=0)
+        counts = dict(verified=0, pending=0, unverified=0, rejected=0, expired=0)
         for user in users:
             if matches_scope(user.barangay, scope):
                 counts[credential_snapshot(user)[0]] += 1
@@ -628,6 +633,8 @@ class AdminActiveBarangaysView(APIView):
             email = f"{slug}_{str(uuid.uuid4())[:4]}@lgu.serbisure.ph"
 
         contact_number = (data.get('contact_number') or '').strip()
+        if not contact_number:
+            return Response({'error': 'An actual desk contact number is required.'}, status=status.HTTP_400_BAD_REQUEST)
         if contact_number:
             clean_digits = re.sub(r'\D', '', contact_number)
             if clean_digits.startswith('639') and len(clean_digits) == 12:
@@ -650,16 +657,6 @@ class AdminActiveBarangaysView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-        if not contact_number:
-            import hashlib
-            base_h = int(hashlib.md5(f"lgu_{clean_b}".encode('utf-8')).hexdigest()[:8], 16) % 900000000 + 100000000
-            contact_number = f"+639{base_h}"
-            attempts = 0
-            while tbl_user_profile.objects.filter(contact_number=contact_number).exists() and attempts < 20:
-                base_h = (base_h + 1) % 900000000 + 100000000
-                contact_number = f"+639{base_h}"
-                attempts += 1
-
         try:
             user = tbl_user_profile(
                 username=f"lgu_{slug}",
@@ -668,12 +665,12 @@ class AdminActiveBarangaysView(APIView):
                 last_name="Desk",
                 account_type="Barangay",
                 barangay=clean_b,
-                region=data.get('region') or 'Region X - Northern Mindanao',
-                province=data.get('province') or 'Misamis Oriental',
-                city=data.get('city') or 'City of Cagayan De Oro',
+                region=data.get('region') or '',
+                province=data.get('province') or '',
+                city=data.get('city') or '',
                 street=data.get('street') or '',
-                zipcode=data.get('zipcode') or '9000',
-                country=data.get('country') or 'Philippines',
+                zipcode=data.get('zipcode') or '',
+                country=data.get('country') or '',
                 contact_number=contact_number,
                 is_active=True,
                 is_staff=True,
@@ -697,7 +694,7 @@ class AdminActiveBarangaysView(APIView):
                 {'error': error_msg},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        except Exception as e:
+        except Exception:
             return Response(
                 {'error': f"Unable to register Barangay {clean_b}. Please verify the form details and try again."},
                 status=status.HTTP_400_BAD_REQUEST
@@ -1095,9 +1092,9 @@ class AdminBarangayDeskProfileView(APIView):
             'last_name': user.last_name or '',
             'officer_name': officer_name,
             'email': user.email or '',
-            'city': user.city or 'Cagayan de Oro City',
-            'province': user.province or 'Misamis Oriental',
-            'zipcode': user.zipcode or '9000',
+            'city': user.city or '',
+            'province': user.province or '',
+            'zipcode': user.zipcode or '',
         }, status=status.HTTP_200_OK)
 
     def put(self, request):
@@ -1179,8 +1176,8 @@ class AdminBarangayDeskProfileView(APIView):
                 'last_name': user.last_name or '',
                 'officer_name': officer_name,
                 'email': user.email or '',
-                'city': user.city or 'Cagayan de Oro City',
-                'province': user.province or 'Misamis Oriental',
-                'zipcode': user.zipcode or '9000',
+                'city': user.city or '',
+                'province': user.province or '',
+                'zipcode': user.zipcode or '',
             }
         }, status=status.HTTP_200_OK)

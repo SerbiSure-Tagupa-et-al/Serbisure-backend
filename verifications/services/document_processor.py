@@ -1,8 +1,12 @@
 import logging
-import threading
-from datetime import date
-from django.db import close_old_connections
+from threading import Thread
+import uuid
+from datetime import date, timedelta
+
+from django.db import close_old_connections, transaction
 from django.utils import timezone
+
+from notifications.models import tbl_notification
 from verifications.models import tbl_documents
 from verifications.services.ocr_service import (
     is_google_vision_available,
@@ -16,145 +20,196 @@ from verifications.services.groq_service import (
     extract_from_image_vision,
 )
 from verifications.services.matching_service import detect_discrepancies
-from notifications.models import tbl_notification
+from verifications.services.document_fields import CORRECTIONS_KEY, merge_document_fields
 
 logger = logging.getLogger(__name__)
+MAX_AUTOMATIC_RETRIES = 3
+RETRY_COOLDOWN = timedelta(seconds=30)
+PROCESSING_LEASE = timedelta(minutes=5)
 
 
-def process_document(document_id: str):
-    """
-    Executes the full document processing pipeline:
-    1. Fetch image from Cloudinary
-    2. Extract text with Google Cloud Vision API (or Tesseract / Groq Vision fallback)
-    3. Structure fields with Groq LLM (llama-3.3-70b-versatile)
-    4. Cross-check against user profile to compute similarity and detect discrepancies
-    5. Save results to tbl_documents
-    6. Send in-app notification to user
-    """
-    try:
-        document = tbl_documents.objects.select_related("user_profile").get(document_id=document_id)
-    except tbl_documents.DoesNotExist:
-        logger.error(f"[DocProcessor] Document with id {document_id} not found.")
-        return
+def _needs_analysis(document):
+    if (document.extracted_data or {}).get(CORRECTIONS_KEY):
+        return document.ocr_processed_at is None
+    return (
+        document.ocr_processed_at is None
+        or not document.extracted_data
+        or not (document.ocr_raw_text or '').strip()
+    )
 
-    logger.info(f"[DocProcessor] Starting OCR & AI processing for document {document_id} ({document.document_type})")
 
-    try:
-        img, raw_bytes = fetch_image_from_cloudinary(document.document_url)
-    except Exception as e:
-        logger.error(f"[DocProcessor] Failed to fetch image from Cloudinary for {document_id}: {e}")
-        if document.ocr_retry_count >= 3:
-            document.ocr_processed_at = timezone.now()
-            document.save(update_fields=["ocr_processed_at"])
-        return
+def document_needs_retry(document, *, now=None, max_retries=MAX_AUTOMATIC_RETRIES):
+    """A status read may recover failed work, but must not duplicate active work."""
+    now = now or timezone.now()
+    last_attempt = document.ocr_last_attempt_at or document.created_at
+    active = document.ocr_processing_token and last_attempt > now - PROCESSING_LEASE
+    return (
+        document.verification_status == 'Pending'
+        and document.ocr_retry_count < max_retries
+        and _needs_analysis(document)
+        and not active
+        and last_attempt <= now - RETRY_COOLDOWN
+    )
 
-    raw_text = ""
+
+def _claim_document(document_id, *, retry=False, force=False, expected_url=None,
+                    max_retries=MAX_AUTOMATIC_RETRIES):
+    # Only this short claim uses a row lock. External API calls run after commit.
+    with transaction.atomic():
+        document = tbl_documents.objects.select_for_update().filter(pk=document_id).first()
+        if document is None or (expected_url is not None and document.document_url != expected_url):
+            return None
+        now = timezone.now()
+        if (document.ocr_processing_token and document.ocr_last_attempt_at
+                and document.ocr_last_attempt_at > now - PROCESSING_LEASE):
+            return None
+        if retry:
+            if not document_needs_retry(document, now=now, max_retries=max_retries):
+                return None
+        elif not force:
+            if document.verification_status != 'Pending' or not _needs_analysis(document):
+                return None
+            if document.ocr_last_attempt_at and document.ocr_last_attempt_at > now - RETRY_COOLDOWN:
+                return None
+        document.ocr_processing_token = uuid.uuid4()
+        document.ocr_last_attempt_at = now
+        if retry:
+            document.ocr_retry_count += 1
+        tbl_documents.objects.filter(pk=document.pk).update(
+            ocr_processing_token=document.ocr_processing_token,
+            ocr_last_attempt_at=now,
+            ocr_retry_count=document.ocr_retry_count,
+        )
+        return document
+
+
+def _owned_document(document):
+    # Both the image and attempt must still match. Re-upload or lease recovery
+    # invalidates an old worker even if it finishes later.
+    return tbl_documents.objects.filter(
+        pk=document.pk, document_url=document.document_url,
+        ocr_processing_token=document.ocr_processing_token,
+    )
+
+
+def _process_claimed_document(document):
+    if not _owned_document(document).exists():
+        return False
+    image, raw_bytes = fetch_image_from_cloudinary(document.document_url)
+    raw_text = ''
     extracted_data = {}
-
-    # Step 1: Google Cloud Vision API (Primary OCR engine)
     if is_google_vision_available():
         try:
-            logger.info(f"[DocProcessor] Running Google Cloud Vision OCR on {document_id}...")
             raw_text = extract_text_with_google_vision(raw_bytes)
-            logger.info(f"[DocProcessor] Google Vision extracted {len(raw_text)} characters.")
-        except Exception as e:
-            logger.warning(f"[DocProcessor] Google Vision failed on {document_id}: {e}")
-            raw_text = ""
+        except Exception:
+            logger.warning('Primary OCR failed for document %s', document.pk)
 
-    # Step 2: Fallback to Tesseract OCR if Google Vision didn't run or failed
     if not raw_text and is_tesseract_available():
         try:
-            logger.info(f"[DocProcessor] Running Tesseract OCR fallback on {document_id}...")
-            raw_text = extract_text_with_tesseract(img)
-            logger.info(f"[DocProcessor] Tesseract extracted {len(raw_text)} characters.")
-        except Exception as e:
-            logger.warning(f"[DocProcessor] Tesseract fallback failed on {document_id}: {e}")
-            raw_text = ""
+            raw_text = extract_text_with_tesseract(image)
+        except Exception:
+            logger.warning('Fallback OCR failed for document %s', document.pk)
 
-    # Step 3: Extract structured data with Groq Llama-3.3
     if raw_text and len(raw_text.strip()) >= 15:
-        logger.info(f"[DocProcessor] Using Groq Llama-3.3 to structure OCR text...")
         extracted_data = extract_structured_data_from_text(raw_text, document.document_type)
     else:
-        # Fallback to Groq Vision if both OCR engines didn't extract text
-        logger.info(f"[DocProcessor] Fallback to Groq Vision for {document_id}...")
-        vision_text, vision_data = extract_from_image_vision(raw_bytes, document.document_type)
-        if vision_text:
-            raw_text = vision_text
-        if vision_data:
-            extracted_data = vision_data
+        vision_text, extracted_data = extract_from_image_vision(raw_bytes, document.document_type)
+        raw_text = vision_text or raw_text
+    if not isinstance(extracted_data, dict):
+        raise ValueError('Document extraction did not return an object')
 
-    # Step 3: Populate extracted dates on document if found
-    if extracted_data.get("date_issued") and not document.date_issued:
-        try:
-            document.date_issued = date.fromisoformat(str(extracted_data["date_issued"]))
-        except (ValueError, TypeError):
-            pass
+    # Provider output cannot mark itself as a human correction.
+    extracted_data.pop(CORRECTIONS_KEY, None)
+    corrections = (document.extracted_data or {}).get(CORRECTIONS_KEY)
+    if corrections:
+        extracted_data = merge_document_fields(extracted_data, corrections, document.document_type)
+        extracted_data[CORRECTIONS_KEY] = corrections
 
-    if extracted_data.get("valid_until") and not document.valid_until:
-        try:
-            document.valid_until = date.fromisoformat(str(extracted_data["valid_until"]))
-        except (ValueError, TypeError):
-            pass
-
-    # Step 4: Discrepancy detection & profile matching
     match_score, discrepancies = detect_discrepancies(extracted_data, document.user_profile)
+    fields = {
+        'ocr_raw_text': raw_text,
+        'extracted_data': extracted_data,
+        'ocr_match_score': match_score,
+        'ocr_discrepancies': discrepancies,
+        'ocr_processed_at': timezone.now(),
+        'document_number': (
+            extracted_data.get('clearance_number') or extracted_data.get('philsys_number')
+            or extracted_data.get('document_number') or extracted_data.get('id_number')
+        ),
+    }
+    for field in ('date_issued', 'valid_until'):
+        if extracted_data.get(field):
+            try:
+                fields[field] = date.fromisoformat(str(extracted_data[field]))
+            except (ValueError, TypeError):
+                pass
+    # Never save a stale model instance or write review fields. An official may
+    # have approved/rejected it while OCR was running.
+    with transaction.atomic():
+        if not _owned_document(document).update(**fields):
+            logger.info('Discarded stale analysis for document %s', document.pk)
+            return False
+        # Expiry dates affect credential eligibility even when an official has
+        # already reviewed the document. Preserve the model's history side effect.
+        from accounts.workforce import record_worker_status
+        record_worker_status(document.user_profile_id, using=document._state.db)
+    if _owned_document(document).filter(verification_status='Pending').exists():
+        try:
+            display = dict(tbl_documents.DOCUMENT_CHOICES).get(document.document_type, document.document_type)
+            tbl_notification.objects.create(
+                sender_id=document.user_profile, receiver_id=document.user_profile,
+                notification_message=(
+                    f'Your {display} was analyzed and is currently under review by Barangay/Admin officials.'
+                ),
+            )
+        except Exception:
+            logger.warning('Analysis notification failed for document %s', document.pk)
+    return True
 
-    document.ocr_raw_text = raw_text
-    document.extracted_data = extracted_data
-    document.ocr_match_score = match_score
-    document.ocr_discrepancies = discrepancies
-    document.ocr_processed_at = timezone.now()
-    # Verification status remains 'Pending' for manual admin/barangay review
-    document.verification_status = "Pending"
-    document.save()
 
-    logger.info(
-        f"[DocProcessor] Completed processing document {document_id}. "
-        f"Match Score: {match_score}, Discrepancies: {len(discrepancies)}"
-    )
-
-    # Step 5: Send notification to user that processing is complete and pending manual review
+def _execute_claimed(document):
     try:
-        doc_display = dict(tbl_documents.DOCUMENT_CHOICES).get(document.document_type, document.document_type)
-        tbl_notification.objects.create(
-            sender_id=document.user_profile,
-            receiver_id=document.user_profile,
-            notification_message=(
-                f"Your {doc_display} was analyzed and is currently under review by Barangay/Admin officials."
-            ),
-        )
-    except Exception as e:
-        logger.warning(f"[DocProcessor] Failed to create in-app notification: {e}")
-
-
-def _run_in_background(document_id: str):
-    """Worker function for background daemon thread with safe connection lifecycle."""
-    import sys
-    is_testing = "test" in sys.argv
-    if not is_testing:
-        close_old_connections()
-    try:
-        process_document(document_id)
-    except Exception as e:
-        logger.error(f"[DocProcessor] Background task error for {document_id}: {e}", exc_info=True)
+        return _process_claimed_document(document)
+    except Exception:
+        logger.exception('Document analysis failed for %s', document.pk)
+        if document.ocr_retry_count >= MAX_AUTOMATIC_RETRIES:
+            _owned_document(document).update(ocr_processed_at=timezone.now())
+        return False
     finally:
-        if not is_testing:
-            close_old_connections()
+        _owned_document(document).update(ocr_processing_token=None)
 
 
+def process_document(document_id, *, retry=False, force=False, max_retries=MAX_AUTOMATIC_RETRIES):
+    """Synchronous entry for the maintenance command; shares the same claim guard."""
+    document = _claim_document(document_id, retry=retry, force=force, max_retries=max_retries)
+    return _execute_claimed(document) if document is not None else None
 
-def process_document_async(document_id: str):
-    """
-    Launch document processing in a daemon background thread so the HTTP request
-    returns immediately without blocking the mobile user.
-    """
-    thread = threading.Thread(
-        target=_run_in_background,
-        args=(str(document_id),),
-        daemon=True,
-        name=f"DocProcessor-{document_id}",
+
+def _run_in_background(document):
+    close_old_connections()
+    try:
+        _execute_claimed(document)
+    finally:
+        close_old_connections()
+
+
+def process_document_async(document_id, *, retry=False, force=False, expected_url=None,
+                           max_retries=MAX_AUTOMATIC_RETRIES):
+    """Claim once in the database, then process without blocking the upload."""
+    document = _claim_document(
+        document_id, retry=retry, force=force, expected_url=expected_url, max_retries=max_retries,
     )
-    thread.start()
-    return thread
+    if document is None:
+        return None
+    try:
+        thread = Thread(
+            target=_run_in_background, args=(document,), daemon=True,
+            name=f'DocProcessor-{document.pk}',
+        )
+        thread.start()
+        return thread
+    except Exception:
+        _owned_document(document).update(ocr_processing_token=None)
+        logger.exception('Could not start document analysis for %s', document.pk)
+        return None
 

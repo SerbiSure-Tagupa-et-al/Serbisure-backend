@@ -5,6 +5,7 @@ from django.core.validators import RegexValidator, MinValueValidator
 from decimal import Decimal
 from django.contrib.postgres.fields import ArrayField
 import uuid 
+import re
 
 # Create your models here.
 
@@ -138,7 +139,7 @@ class tbl_booking(models.Model):
         max_length=4,
         blank=True,
         null=True,
-        default='9000',
+        default='',
         validators=[
             RegexValidator(
                 r'^(0[4-9]\d{2}|[1-9]\d{3})$', 
@@ -179,8 +180,10 @@ class tbl_booking(models.Model):
 
     @property
     def full_address(self):
-        parts = [p for p in [self.street, self.barangay, self.city, self.province] if p]
-        return ", ".join(parts) if parts else ""
+        barangay = re.sub(r'^(?:brgy\.?|barangay)\s+', '', (self.barangay or '').strip(), flags=re.IGNORECASE)
+        parts = [self.street, self.floor_number, f'Brgy. {barangay}' if barangay else '',
+                 self.city, self.province, self.zip_code]
+        return ', '.join(str(part).strip() for part in parts if part and str(part).strip())
 
     def __str__(self):
         return f"{self.service_category} - {self.booking_status}"

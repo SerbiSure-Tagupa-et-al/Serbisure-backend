@@ -1,19 +1,27 @@
 from rest_framework import serializers
-from decimal import Decimal
-from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal, tbl_saved_post
+from .models import tbl_booking, tbl_booking_proposal, tbl_saved_post
 from .wage_policy import validate_rate, DOLE_CONTRACT_PDF_URL
 from django.utils import timezone
 from .services import PH_TIME
 from reviews.models import tbl_review
 from django.db.models import Avg
 from core.utils import get_signed_cloudinary_url
+from .availability import post_status, schedule_expired
 
 
 class BookingCancellationSerializer(serializers.Serializer):
+    pending_only = serializers.BooleanField(required=False, default=False)
     reason = serializers.CharField(max_length=255, allow_blank=False,
         error_messages={'required': 'Choose a cancellation reason.', 'blank': 'Choose a cancellation reason.'})
     expected_points = serializers.IntegerField(min_value=0, max_value=2, required=False)
     action = serializers.ChoiceField(choices=['cancel', 'request', 'reject'], required=False)
+
+
+class ChatOfferContextSerializer(serializers.Serializer):
+    recipient_id = serializers.UUIDField(error_messages={
+        'required': 'Choose a recipient before sending this offer.',
+        'invalid': 'The recipient is invalid. Reopen their profile and try again.',
+    })
 
 
 def get_signed_avatar(user):
@@ -23,9 +31,30 @@ def get_signed_avatar(user):
     return get_signed_cloudinary_url(public_id, as_avatar=True)
 
 
+class RepostScheduleSerializer(serializers.Serializer):
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField(required=False, allow_null=True)
+    daily_start_time = serializers.TimeField()
+    daily_end_time = serializers.TimeField()
+    work_days = serializers.ListField(child=serializers.ChoiceField(choices=['M', 'T', 'W', 'Th', 'F', 'S', 'Su']), min_length=1)
+
+
+class PostStateSerializerMixin:
+    def get_schedule_expired(self, obj):
+        return schedule_expired(obj)
+
+    def get_post_status(self, obj):
+        return post_status(obj)
+
+    def get_can_repost(self, obj):
+        request = self.context.get('request')
+        return bool(request and request.user.pk == obj.poster_id_id and not obj.recipient_id_id
+                    and post_status(obj) == 'Available' and schedule_expired(obj))
+
+
 class BookingSerializer(serializers.ModelSerializer):
     work_setup = serializers.ChoiceField(choices=tbl_booking.WORK_SETUP_CHOICES, required=True)
-    zip_code = serializers.CharField(max_length=4, required=False, default='9000', allow_blank=True)
+    zip_code = serializers.CharField(max_length=4, required=False, default='', allow_blank=True)
     region = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
     province = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
     city = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
@@ -95,7 +124,15 @@ class BookingSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({field: 'The schedule must match the selected working time in the Philippines.'})
         if start_time and days:
             start_day = ['M', 'T', 'W', 'Th', 'F', 'S', 'Su'][start_time.astimezone(PH_TIME).weekday()]
-            if start_day not in days:
+            short_range = (data.get('booking_type') == 'short_term' and end_time
+                and end_time.astimezone(PH_TIME).date() > start_time.astimezone(PH_TIME).date())
+            if short_range:
+                day_span = (end_time.astimezone(PH_TIME).date() - start_time.astimezone(PH_TIME).date()).days
+                weekdays = ['M', 'T', 'W', 'Th', 'F', 'S', 'Su']
+                first = start_time.astimezone(PH_TIME).weekday()
+                if not any(weekdays[(first + offset) % 7] in days for offset in range(min(day_span + 1, 7))):
+                    raise serializers.ValidationError({'work_days': 'Select a working day within the date range.'})
+            elif start_day not in days:
                 raise serializers.ValidationError({'work_days': 'The start date must fall on a selected working day.'})
 
         if start_time and start_time <= now: 
@@ -126,7 +163,10 @@ class BookingSerializer(serializers.ModelSerializer):
         return data
 
 
-class BookingFeedSerializer(serializers.ModelSerializer):
+class BookingFeedSerializer(PostStateSerializerMixin, serializers.ModelSerializer):
+    schedule_expired = serializers.SerializerMethodField()
+    post_status = serializers.SerializerMethodField()
+    can_repost = serializers.SerializerMethodField()
     profile_link = serializers.SerializerMethodField()
     name = serializers.SerializerMethodField()
     poster_account_type = serializers.SerializerMethodField()
@@ -139,6 +179,9 @@ class BookingFeedSerializer(serializers.ModelSerializer):
             'booking_id',
             'poster_id',
             'poster_account_type',
+            'post_status',
+            'schedule_expired',
+            'can_repost',
             'poster_verification_status',
             'booking_type',
             'work_setup',
@@ -180,6 +223,26 @@ class BookingFeedSerializer(serializers.ModelSerializer):
         return get_signed_avatar(obj.poster_id)
 
 
+class ApplicationPostSerializer(BookingFeedSerializer):
+    application_status = serializers.SerializerMethodField()
+
+    class Meta(BookingFeedSerializer.Meta):
+        fields = BookingFeedSerializer.Meta.fields + ['application_status']
+
+    def get_application_status(self, obj):
+        proposal = obj.viewer_application
+        if proposal.status == 'Accepted':
+            return 'accepted'
+        if proposal.status == 'Withdrawn':
+            return 'withdrawn'
+        status = post_status(obj)
+        if status == 'Cancelled':
+            return 'cancelled'
+        if proposal.status == 'Rejected' or status in ('Booked', 'Ongoing', 'Completed'):
+            return 'not_selected'
+        return 'applied'
+
+
 class PublicPendingPostSerializer(BookingFeedSerializer):
     viewer_proposal = serializers.SerializerMethodField()
 
@@ -194,7 +257,11 @@ class PublicPendingPostSerializer(BookingFeedSerializer):
         return {'proposal_id': str(proposal.proposal_id), 'status': proposal.status}
 
 
-class BookingDetailSerializer(serializers.ModelSerializer):
+class BookingDetailSerializer(PostStateSerializerMixin, serializers.ModelSerializer):
+    pass_url = serializers.SerializerMethodField()
+    schedule_expired = serializers.SerializerMethodField()
+    post_status = serializers.SerializerMethodField()
+    can_repost = serializers.SerializerMethodField()
     poster = serializers.SerializerMethodField()
     assigned_partner = serializers.SerializerMethodField()
     recipient = serializers.SerializerMethodField()
@@ -207,6 +274,7 @@ class BookingDetailSerializer(serializers.ModelSerializer):
         model = tbl_booking
         fields = [
             'booking_id',
+            'pass_url',
             'booking_type',
             'work_setup',
             'work_days',
@@ -238,11 +306,24 @@ class BookingDetailSerializer(serializers.ModelSerializer):
             'started_at',
             'completed_at',
             'contract_summary',
+            'post_status',
+            'schedule_expired',
+            'can_repost',
             'cancellation_reason',
             'cancelled_by',
             'cancelled_at',
             'cancellation_penalty_points',
         ]
+
+    def get_pass_url(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return None
+        person_id = request.user.pk
+        if person_id not in (obj.poster_id_id, obj.recipient_id_id) and not obj.assignments.filter(accepter_id_id=person_id).exists():
+            return None
+        from .gate_pass import gate_pass_url
+        return gate_pass_url(request, obj.pk)
 
     def get_contract_summary(self, obj):
         request = self.context.get('request')

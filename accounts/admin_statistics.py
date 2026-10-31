@@ -18,6 +18,18 @@ def scope_for(request):
     return request.query_params.get('barangay') or 'All Barangays'
 
 
+def scoped_residents(request):
+    """The portal list and counters share active residents and normalized scope."""
+    scope = scope_for(request)
+    users = tbl_user_profile.objects.filter(
+        account_type__in=['Kasambahay', 'Homeowner'], is_active=True,
+    ).prefetch_related('documents')
+    role = request.query_params.get('role', 'ALL')
+    if role.upper() not in ('ALL', 'ALL ROLES'):
+        users = users.filter(account_type__iexact=role)
+    return [user for user in users if matches_scope(user.barangay, scope)]
+
+
 def resident_snapshot(scope='All Barangays', restrict_directory=False):
     users = list(tbl_user_profile.objects.filter(account_type__in=['Kasambahay', 'Homeowner'], is_active=True).prefetch_related('documents').select_related('worker_profile'))
     active = {}
@@ -44,7 +56,7 @@ def resident_snapshot(scope='All Barangays', restrict_directory=False):
     def stats(residents):
         workers = [user for user in residents if user.account_type == 'Kasambahay' and statuses[user.pk] == 'verified']
         employed = sum(user.is_on_job for user in workers)
-        counts = {'pending': 0, 'verified': 0, 'rejected': 0, 'noDocuments': 0}
+        counts = {'pending': 0, 'verified': 0, 'rejected': 0, 'expired': 0, 'noDocuments': 0}
         for user in residents:
             counts[{'unverified': 'noDocuments'}.get(statuses[user.pk], statuses[user.pk])] += 1
         return {'totalRegistered': len(residents), 'totalWorkers': len(workers), 'employed': employed,

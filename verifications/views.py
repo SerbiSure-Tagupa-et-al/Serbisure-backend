@@ -1,5 +1,5 @@
 from rest_framework import generics
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from .models import tbl_documents
 from .serializers import DocumentUploadSerializer, AdminVerificationQueueSerializer
@@ -8,7 +8,6 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.exceptions import Throttled
 from rest_framework import status
 from rest_framework.response import Response
-from core.utils import get_signed_cloudinary_url
 import math
 class DocumentUploadThrottle(UserRateThrottle):
     rate = '20/d'
@@ -37,14 +36,14 @@ class DocumentUploadView(generics.CreateAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Allow re-upload if previous document was Rejected. Block if Pending or Verified!
-        active_doc = tbl_documents.objects.filter(
-            user_profile=user,
-            document_type=doc_type,
-            verification_status__in=['Pending', 'Verified']
-        ).first()
+        from .services.document_upload import document_can_be_replaced
 
-        if active_doc:
+        # Expired approvals can be renewed without waiting for an official.
+        active_doc = tbl_documents.objects.filter(
+            user_profile=user, document_type=doc_type,
+        ).order_by('-created_at', '-pk').first()
+
+        if active_doc and not document_can_be_replaced(active_doc):
             status_text = "is currently pending review" if active_doc.verification_status == "Pending" else "is already verified"
             return Response(
                 {"error": f"You have already submitted your {doc_type} ({status_text})."},
@@ -87,39 +86,16 @@ class UserVerificationStatusView(generics.GenericAPIView):
 
     def get(self, request):
         from .serializers_admin import UserDocumentStatusSerializer
-        from .services.document_processor import process_document_async
-        from datetime import timedelta
-        from django.utils import timezone
-        import logging
-        logger = logging.getLogger(__name__)
+        from .services.document_processor import document_needs_retry, process_document_async
+        from accounts.workforce import document_is_expired, latest_required_documents
 
         user = request.user
-        documents = tbl_documents.objects.filter(user_profile=user).order_by('-created_at')
-
-        # Lazy retry: find stuck documents submitted > 30s ago that haven't finished OCR
-        # or where previous extraction produced empty results ({})
-        stuck_threshold = timezone.now() - timedelta(seconds=30)
-        stuck_docs = [
-            doc for doc in documents
-            if doc.verification_status == 'Pending'
-            and doc.ocr_retry_count < 3
-            and doc.created_at <= stuck_threshold
-            and (
-                doc.ocr_processed_at is None
-                or not doc.extracted_data
-                or doc.extracted_data == {}
-                or not (doc.ocr_raw_text and doc.ocr_raw_text.strip())
-            )
-        ]
-
-        for doc in stuck_docs:
-            logger.info(
-                f"[LazyRetry] Retrying OCR for stuck document {doc.document_id} "
-                f"({doc.document_type}), attempt {doc.ocr_retry_count + 1}/3"
-            )
-            doc.ocr_retry_count += 1
-            doc.save(update_fields=['ocr_retry_count'])
-            process_document_async(str(doc.document_id))
+        documents = tbl_documents.objects.filter(user_profile=user).order_by('-created_at', '-pk')
+        for doc in documents:
+            if document_needs_retry(doc):
+                job = process_document_async(str(doc.pk), retry=True)
+                if job is not None:
+                    doc.refresh_from_db()
 
         serialized_docs = UserDocumentStatusSerializer(documents, many=True).data
 
@@ -131,9 +107,19 @@ class UserVerificationStatusView(generics.GenericAPIView):
         else:
             required_docs = []
 
+        current = latest_required_documents(user)
+        renewal_required = any(document_is_expired(doc) and doc.verification_status != 'Pending' for doc in current)
+        renewal_pending = any(
+            doc.verification_status == 'Pending' and any(
+                old.document_type == doc.document_type and old.pk != doc.pk and document_is_expired(old)
+                for old in documents
+            ) for doc in current
+        )
         return Response({
             "account_type": user.account_type,
             "overall_status": user.verification_status,
+            "renewal_required": renewal_required,
+            "renewal_pending": renewal_pending,
             "required_documents": required_docs,
             "user_info": {
                 "first_name": user.first_name,
@@ -190,178 +176,16 @@ DocumentStatusView = UserVerificationStatusView
 # ==========================================
 
 class AdminVerificationQueueView(generics.ListAPIView):
-    """
-    Returns all verification requests for the Web Admin dashboard.
-    Supports query params:
-    - ?role=KASAMBAHAY | HOMEOWNER
-    - ?status=PENDING | VERIFIED | REJECTED | NO_DOCUMENTS | ALL
-    - ?barangay=Pagatpat | UNASSIGNED | ALL
-    """
+    """Current required documents, grouped by the same rules as portal statistics."""
     from .views_admin import IsAdminOrBarangay
     permission_classes = [IsAuthenticated, IsAdminOrBarangay]
     serializer_class = AdminVerificationQueueSerializer
 
-    def get_queryset(self):
-        doc_status = self.request.query_params.get('status')
-        if doc_status and doc_status.upper() in ['NO_DOCUMENTS', 'UNSUBMITTED']:
-            return tbl_documents.objects.none()
-
-        # Every required document has its own review row and decision.
-        qs = tbl_documents.objects.select_related('user_profile').order_by('-created_at')
-        if self.request.user.account_type == 'Barangay':
-            qs = qs.filter(user_profile__barangay__iexact=(self.request.user.barangay or '').strip())
-
-        
-        role = self.request.query_params.get('role')
-        if role and role.upper() != 'ALL':
-            qs = qs.filter(user_profile__account_type__iexact=role)
-            
-        if doc_status and doc_status.upper() != 'ALL':
-            if doc_status.upper() in ['PENDING', 'PENDING / REVIEW']:
-                qs = qs.filter(verification_status__in=['Pending', 'Unverified'])
-            elif doc_status.upper() == 'VERIFIED':
-                qs = qs.filter(verification_status='Verified')
-            elif doc_status.upper() == 'REJECTED':
-                qs = qs.filter(verification_status='Rejected')
-
-        barangay = self.request.query_params.get('barangay')
-        if self.request.user.is_authenticated and getattr(self.request.user, 'account_type', None) == 'Barangay':
-            barangay = self.request.user.barangay
-
-        from django.db.models import Q
-        if barangay:
-            if barangay.upper() in ['UNASSIGNED', 'NO LGU COVERAGE', 'NO_LGU']:
-                from accounts.models import tbl_user_profile
-                active_lgus = [
-                    b.strip() for b in tbl_user_profile.objects.filter(
-                        account_type='Barangay', is_active=True
-                    ).exclude(barangay__isnull=True).exclude(barangay__exact='')
-                    .values_list('barangay', flat=True) if b and b.strip()
-                ]
-                q_assigned = Q()
-                for b in active_lgus:
-                    q_assigned |= Q(user_profile__barangay__iexact=b)
-                qs = qs.exclude(q_assigned)
-            elif barangay.lower() not in ['all', 'all barangays']:
-                qs = qs.filter(
-                    Q(user_profile__barangay__iexact=barangay) |
-                    Q(user_profile__barangay__icontains=barangay) |
-                    Q(user_profile__city__icontains=barangay) |
-                    Q(user_profile__street__icontains=barangay)
-                )
-
-        return qs
-
     def list(self, request, *args, **kwargs):
-        from accounts.models import tbl_user_profile
-        from django.db.models import Q
-        import cloudinary.utils
-
-        doc_status = request.query_params.get('status')
-        role_param = request.query_params.get('role')
-        barangay_param = request.query_params.get('barangay')
-
-        if request.user.is_authenticated and getattr(request.user, 'account_type', None) == 'Barangay':
-            barangay_param = request.user.barangay
-
-        # Dynamic active LGU barangay set
-        active_lgus = [
-            b.strip() for b in tbl_user_profile.objects.filter(
-                account_type='Barangay', is_active=True
-            ).exclude(barangay__isnull=True).exclude(barangay__exact='')
-            .values_list('barangay', flat=True) if b and b.strip()
-        ]
-        active_lgus_lower = [b.lower() for b in active_lgus]
-
-        # 1. Fetch document entries unless specifically requesting only unsubmitted
-        doc_data = []
-        if not (doc_status and doc_status.upper() in ['NO_DOCUMENTS', 'UNSUBMITTED']):
-            queryset = self.filter_queryset(self.get_queryset())
-            serializer = self.get_serializer(queryset, many=True)
-            doc_data = serializer.data
-
-        # 2. Fetch unsubmitted users if status is NO_DOCUMENTS, UNSUBMITTED, ALL, or not specified
-        unsubmitted_data = []
-        if not doc_status or doc_status.upper() in ['ALL', 'NO_DOCUMENTS', 'UNSUBMITTED']:
-            users_with_docs = tbl_documents.objects.values_list('user_profile_id', flat=True).distinct()
-            unsub_qs = tbl_user_profile.objects.filter(
-                account_type__in=['Homeowner', 'Kasambahay']
-            ).exclude(id__in=users_with_docs).order_by('-date_joined')
-
-            if role_param and role_param.upper() != 'ALL':
-                unsub_qs = unsub_qs.filter(account_type__iexact=role_param)
-
-            if barangay_param:
-                if barangay_param.upper() in ['UNASSIGNED', 'NO LGU COVERAGE', 'NO_LGU']:
-                    q_assigned = Q()
-                    for b in active_lgus:
-                        q_assigned |= Q(barangay__iexact=b)
-                    unsub_qs = unsub_qs.exclude(q_assigned)
-                elif barangay_param.lower() not in ['all', 'all barangays']:
-                    unsub_qs = unsub_qs.filter(
-                        Q(barangay__iexact=barangay_param) |
-                        Q(barangay__icontains=barangay_param) |
-                        Q(city__icontains=barangay_param) |
-                        Q(street__icontains=barangay_param)
-                    )
-
-            for u in unsub_qs:
-                full_name = f"{u.first_name} {u.last_name}".strip() or u.username
-                role_norm = u.account_type.upper() if u.account_type else 'HOMEOWNER'
-                if role_norm not in ['HOMEOWNER', 'KASAMBAHAY']:
-                    role_norm = 'HOMEOWNER'
-
-                avatar = (
-                    get_signed_cloudinary_url(u.profile_link, as_avatar=True)
-                    or f"https://ui-avatars.com/api/?name={u.first_name}+{u.last_name}&background=F5A623&color=fff"
-                )
-
-                brgy = (u.barangay or '').strip()
-                if not brgy:
-                    street_lower = (u.street or '').lower()
-                    city_lower = (u.city or '').lower()
-                    for b in active_lgus:
-                        if b.lower() in street_lower or b.lower() in city_lower:
-                            brgy = b
-                            break
-                if not brgy:
-                    brgy = 'Unassigned'
-
-                has_lgu = bool(brgy and brgy.lower() in active_lgus_lower)
-                req_label = "Statutory Clearances (NBI + Police)" if role_norm == 'KASAMBAHAY' else "National ID (Front + Back)"
-
-                unsubmitted_data.append({
-                    "id": f"unsubmitted_{u.id}",
-                    "userId": str(u.id),
-                    "name": full_name,
-                    "role": role_norm,
-                    "avatar": avatar,
-                    "documentType": "No Documents Submitted",
-                    "rawDocumentType": "unsubmitted",
-                    "documentNumber": "Not Available",
-                    "submittedDate": "Not Submitted",
-                    "issuedDate": "N/A",
-                    "validityDate": "N/A",
-                    "status": "NO_DOCUMENTS",
-                    "primaryStatus": "NO_DOCUMENTS",
-                    "recordStatus": "Under Review",
-                    "documentImage": "",
-                    "documentImageBack": "",
-                    "barangay": brgy,
-                    "city": u.city or "Cagayan de Oro City",
-                    "address": f"{u.street or ''}, {u.city or 'Cagayan de Oro City'}".strip(', '),
-                    "contactNumber": u.contact_number or "+639123456789",
-                    "email": u.email,
-                    "notes": f"Pending initial upload of {req_label}",
-                    "hasDocuments": False,
-                    "hasLguCoverage": has_lgu,
-                    "joinedDate": u.date_joined.strftime('%b %d, %Y') if u.date_joined else "Recent"
-                })
-
-        if doc_status and doc_status.upper() in ['NO_DOCUMENTS', 'UNSUBMITTED']:
-            return Response(unsubmitted_data, status=status.HTTP_200_OK)
-
-        return Response(doc_data + unsubmitted_data, status=status.HTTP_200_OK)
+        from .services.queue import verification_queue
+        response = Response(verification_queue(request))
+        response['Cache-Control'] = 'private, no-store'
+        return response
 
 
 class AdminVerificationReviewView(generics.GenericAPIView):
@@ -427,7 +251,7 @@ class AdminVerificationReviewView(generics.GenericAPIView):
                 pass
 
             return Response({
-                "message": f"Document approved successfully.",
+                "message": "Document approved successfully.",
                 "document": AdminVerificationQueueSerializer(document).data
             }, status=status.HTTP_200_OK)
 

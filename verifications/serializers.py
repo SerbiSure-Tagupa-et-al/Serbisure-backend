@@ -1,7 +1,7 @@
 from rest_framework import serializers
+from accounts.workforce import PH_TIME
 from .models import tbl_documents
-from .ocr_service import process_document_ocr
-import cloudinary.uploader
+from .services.document_upload import create_uploaded_document
 import cloudinary.utils
 
 class DocumentUploadSerializer(serializers.ModelSerializer):
@@ -31,94 +31,8 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
         ]
 
     def create(self, validated_data):
-        # Grab the image 
         image_file = validated_data.pop('document_image')
-
-        # Grab the user who is logged in (from the JWT token)
-        user = self.context['request'].user
-        doc_type = validated_data.get('document_type', '')
-
-        # Process Google Vision OCR
-        image_bytes = image_file.read()
-        image_file.seek(0)
-        
-        ocr_result = process_document_ocr(image_bytes, doc_type, user)
-
-        upload_result = cloudinary.uploader.upload(
-            image_file,
-            folder="serbisure_credentials/",
-            type="authenticated"
-        )
-
-        # Get the permanent URL / public_id from Cloudinary
-        public_id = upload_result.get('public_id')
-        doc_type = validated_data.get('document_type')
-
-        # Extract parsed dates from OCR if detected
-        parsed_date_issued = None
-        parsed_valid_until = None
-        try:
-            raw_issued = ocr_result.get('date_issued') or ocr_result.get('extracted_data', {}).get('date_issued')
-            if raw_issued:
-                from datetime import datetime
-                parsed_date_issued = datetime.strptime(str(raw_issued)[:10], '%Y-%m-%d').date()
-        except Exception:
-            pass
-
-        try:
-            raw_valid = ocr_result.get('valid_until') or ocr_result.get('extracted_data', {}).get('valid_until')
-            if raw_valid:
-                from datetime import datetime
-                parsed_valid_until = datetime.strptime(str(raw_valid)[:10], '%Y-%m-%d').date()
-        except Exception:
-            pass
-
-        ocr_fields = {
-            'document_number': ocr_result.get('document_number'),
-            'date_issued': parsed_date_issued,
-            'valid_until': parsed_valid_until,
-            'ocr_raw_text': ocr_result.get('raw_text'),
-            'extracted_data': ocr_result.get('extracted_data', {}),
-            'ocr_match_score': ocr_result.get('match_score'),
-            'ocr_discrepancies': ocr_result.get('discrepancies', []),
-            'face_liveness_score': None,  # OCR is never biometric evidence.
-        }
-
-        # Check if there is an existing rejected document to replace
-        existing = tbl_documents.objects.filter(
-            user_profile=user,
-            document_type=doc_type,
-            verification_status='Rejected'
-        ).first()
-
-        if existing:
-            existing.document_url = public_id
-            existing.verification_status = 'Pending'
-            existing.rejection_reason = None
-            for key, val in ocr_fields.items():
-                setattr(existing, key, val)
-            for key, val in validated_data.items():
-                setattr(existing, key, val)
-            existing.save()
-            document = existing
-        else:
-            document = tbl_documents.objects.create(
-                user_profile=user,
-                document_url=public_id,
-                verification_status='Pending',
-                **ocr_fields,
-                **validated_data
-            )
-
-        # Trigger background OCR + Groq processing after DB transaction commits
-        try:
-            from django.db import transaction
-            from verifications.services.document_processor import process_document_async
-            transaction.on_commit(lambda doc_id=str(document.document_id): process_document_async(doc_id))
-        except Exception:
-            pass
-
-        return document
+        return create_uploaded_document(self.context['request'].user, image_file, validated_data)
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
@@ -161,6 +75,9 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
     issuedDate = serializers.SerializerMethodField()
     validityDate = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
+    applicantStatus = serializers.SerializerMethodField()
+    isExpired = serializers.SerializerMethodField()
+    validUntil = serializers.DateField(source='valid_until', read_only=True)
     recordStatus = serializers.SerializerMethodField()
     documentImage = serializers.SerializerMethodField()
     documentImageBack = serializers.SerializerMethodField()
@@ -197,6 +114,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'userId', 'submittedAt', 'name', 'role', 'avatar', 'documentType', 'rawDocumentType', 'documentNumber',
             'submittedDate', 'issuedDate', 'validityDate', 'status', 'primaryStatus', 'recordStatus',
+            'applicantStatus', 'isExpired', 'validUntil',
             'documentImage', 'documentImageBack', 'barangay', 'contactNumber', 'email', 'notes',
             'faceLivenessMatchScore', 'ocrExtractedData', 'ocrDiscrepancies', 'ocrMatchScore',
             'isPackage', 'packageLabel', 'secondaryDocumentId', 'secondaryDocumentImage', 'secondaryDocumentType',
@@ -208,6 +126,18 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
     def _get_companion_doc(self, obj):
         # Independent records: package metadata must not mask another document's status.
         return None
+
+    def get_applicantStatus(self, obj):
+        from accounts.workforce import credential_snapshot
+        from .services.queue import PORTAL_STATUS
+        statuses = self.context.get('applicant_statuses', {})
+        if obj.user_profile_id in statuses:
+            return statuses[obj.user_profile_id]
+        return PORTAL_STATUS[credential_snapshot(obj.user_profile)[0]]
+
+    def get_isExpired(self, obj):
+        from accounts.workforce import document_is_expired
+        return document_is_expired(obj)
 
     def get_isPackage(self, obj):
         companion = self._get_companion_doc(obj)
@@ -285,7 +215,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
 
     def get_submittedDate(self, obj):
         if obj.created_at:
-            return obj.created_at.strftime('%b %d, %Y %I:%M %p')
+            return obj.created_at.astimezone(PH_TIME).strftime('%b %d, %Y %I:%M %p PHT')
         return "Recent"
 
     def get_issuedDate(self, obj):
@@ -499,6 +429,9 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         return data
 
     def get_barangay(self, obj):
+        if self.context.get('resident_scope'):
+            from accounts.admin_statistics import barangay_name
+            return barangay_name(obj.user_profile.barangay) or 'Unassigned'
         u = getattr(obj, 'user_profile', None)
         if not u:
             return 'Unassigned'
@@ -520,6 +453,9 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         return 'Unassigned'
 
     def get_hasLguCoverage(self, obj):
+        if 'active_lgus' in self.context:
+            from accounts.admin_statistics import barangay_name
+            return barangay_name(obj.user_profile.barangay).casefold() in self.context['active_lgus']
         brgy = self.get_barangay(obj)
         if not brgy or brgy.lower() == 'unassigned':
             return False
@@ -536,7 +472,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         return True
 
     def get_contactNumber(self, obj):
-        return getattr(obj.user_profile, 'contact_number', '') or '+639171234567'
+        return getattr(obj.user_profile, 'contact_number', '') or ''
 
     def get_email(self, obj):
         return getattr(obj.user_profile, 'email', '')

@@ -3,6 +3,7 @@ from .chat_offers import ChatBookingOfferView
 from .views import (
     BookingView,
     BookingRateReviewView,
+    BookingRepostView,
     BookingContractTemplateView,
     BookingFeedView,
     PublicPendingPostsView,
@@ -40,6 +41,7 @@ urlpatterns = [
     path('saved/', SavedBookingListView.as_view(), name='booking-saved-list'),
     path('<uuid:booking_id>/', BookingDetailView.as_view(), name='booking-detail'),
     path('<uuid:booking_id>/rate/', BookingRateReviewView.as_view(), name='booking-rate-review'),
+    path('<uuid:booking_id>/repost/', BookingRepostView.as_view(), name='booking-repost'),
     path('<uuid:booking_id>/accept/', BookingAcceptView.as_view(), name='booking-accept'),
     path('<uuid:booking_id>/start/', BookingStartView.as_view(), name='booking-start'),
     path('<uuid:booking_id>/complete/', BookingCompleteView.as_view(), name='booking-complete'),
