@@ -84,8 +84,12 @@ class AsyncUploadTests(APITestCase):
         with self.captureOnCommitCallbacks(execute=True):
             response = self.upload('national_id_front')
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(str(document.pk), response.data['document_id'])
+        self.assertNotEqual(str(document.pk), response.data['document_id'])
         document.refresh_from_db()
+        self.assertEqual(document.verification_status, 'Rejected')
+        self.assertEqual(document.document_url, 'old-image')
+        self.assertEqual(document.ocr_processing_token, old_token)
+        document = tbl_documents.objects.get(pk=response.data['document_id'])
         for field in ['verifyBy_id', 'rejection_reason', 'document_number', 'date_issued',
                       'valid_until', 'ocr_raw_text', 'ocr_match_score', 'ocr_processed_at']:
             self.assertIsNone(getattr(document, field), field)

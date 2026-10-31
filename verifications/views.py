@@ -36,12 +36,14 @@ class DocumentUploadView(generics.CreateAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Allow re-upload if previous document was Rejected. Block if Pending or Verified!
+        from .services.document_upload import document_can_be_replaced
+
+        # Expired approvals can be renewed without waiting for an official.
         active_doc = tbl_documents.objects.filter(
             user_profile=user, document_type=doc_type,
         ).order_by('-created_at', '-pk').first()
 
-        if active_doc and active_doc.verification_status in ['Pending', 'Verified']:
+        if active_doc and not document_can_be_replaced(active_doc):
             status_text = "is currently pending review" if active_doc.verification_status == "Pending" else "is already verified"
             return Response(
                 {"error": f"You have already submitted your {doc_type} ({status_text})."},
@@ -85,9 +87,10 @@ class UserVerificationStatusView(generics.GenericAPIView):
     def get(self, request):
         from .serializers_admin import UserDocumentStatusSerializer
         from .services.document_processor import document_needs_retry, process_document_async
+        from accounts.workforce import document_is_expired, latest_required_documents
 
         user = request.user
-        documents = tbl_documents.objects.filter(user_profile=user).order_by('-created_at')
+        documents = tbl_documents.objects.filter(user_profile=user).order_by('-created_at', '-pk')
         for doc in documents:
             if document_needs_retry(doc):
                 job = process_document_async(str(doc.pk), retry=True)
@@ -104,9 +107,19 @@ class UserVerificationStatusView(generics.GenericAPIView):
         else:
             required_docs = []
 
+        current = latest_required_documents(user)
+        renewal_required = any(document_is_expired(doc) and doc.verification_status != 'Pending' for doc in current)
+        renewal_pending = any(
+            doc.verification_status == 'Pending' and any(
+                old.document_type == doc.document_type and old.pk != doc.pk and document_is_expired(old)
+                for old in documents
+            ) for doc in current
+        )
         return Response({
             "account_type": user.account_type,
             "overall_status": user.verification_status,
+            "renewal_required": renewal_required,
+            "renewal_pending": renewal_pending,
             "required_documents": required_docs,
             "user_info": {
                 "first_name": user.first_name,

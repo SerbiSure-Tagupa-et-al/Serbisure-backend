@@ -5,11 +5,19 @@ from rest_framework.exceptions import APIException
 
 from verifications.models import tbl_documents
 from verifications.services import document_processor
+from accounts.workforce import document_is_expired
 
 
 class DocumentAlreadySubmitted(APIException):
     status_code = 409
     default_detail = 'This document is already submitted. Refresh your documents before trying again.'
+
+
+def document_can_be_replaced(document):
+    # Pending submissions stay locked while officials review them.
+    return document.verification_status in ('Unverified', 'Rejected') or (
+        document.verification_status == 'Verified' and document_is_expired(document)
+    )
 
 
 def create_uploaded_document(user, image_file, document_data):
@@ -39,12 +47,17 @@ def create_uploaded_document(user, image_file, document_data):
         'face_liveness_score': None,
     }
     with transaction.atomic():
-        existing = tbl_documents.objects.select_for_update().filter(
+        current = tbl_documents.objects.filter(
             user_profile=user, document_type=document_data['document_type'],
-        ).order_by('-created_at', '-pk').first()
-        if existing and existing.verification_status in ('Pending', 'Verified'):
+        ).order_by('-created_at', '-pk')
+        # Match the review flow's document -> account lock order. Re-read after
+        # waiting so a concurrent renewal cannot create a second submission.
+        current.select_for_update().first()
+        type(user).objects.select_for_update().get(pk=user.pk)
+        existing = current.first()
+        if existing and not document_can_be_replaced(existing):
             raise DocumentAlreadySubmitted()
-        if existing:
+        if existing and not document_is_expired(existing):
             for key, value in {**document_data, **reset_fields}.items():
                 setattr(existing, key, value)
             existing.created_at = timezone.now()

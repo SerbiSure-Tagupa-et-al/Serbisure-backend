@@ -187,15 +187,83 @@ class ClearanceExpiryTests(APITestCase):
             response = self.client.post('/api/v1/verifications/upload/', {'document_type': 'nbi_clearance', 'document_image': image_file()}, format='multipart')
         self.assertEqual(response.status_code, 201, response.data)
         self.nbi.refresh_from_db(); self.police.refresh_from_db()
-        self.assertEqual(self.nbi.verification_status, 'Pending')
-        self.assertIsNone(self.nbi.valid_until)
+        renewal = Document.objects.get(pk=response.data['document_id'])
+        self.assertEqual(self.nbi.verification_status, 'Rejected', 'Keep the expired record and its review history')
+        self.assertEqual(renewal.verification_status, 'Pending')
+        self.assertIsNone(renewal.valid_until)
         self.assertEqual(self.police.verification_status, 'Verified')
         self.worker.refresh_from_db()
         self.assertNotEqual(self.worker.verification_status, 'Verified')
-        self.nbi.valid_until = self.today + timedelta(days=90)
-        self.nbi.verification_status = 'Verified'; self.nbi.save()
+        renewal.valid_until = self.today + timedelta(days=90)
+        renewal.verification_status = 'Verified'; renewal.save()
         self.worker.refresh_from_db()
         self.assertEqual(self.worker.verification_status, 'Verified')
+
+    def test_worker_can_renew_expired_approval_without_admin_and_keeps_history(self):
+        self.client.force_authenticate(self.worker)
+        before = self.client.get('/api/v1/verifications/status/').data
+        self.assertTrue(before['renewal_required'])
+        self.assertEqual(before['overall_status'], 'Unverified')
+        flags = {doc['document_type']: doc for doc in before['documents']}
+        self.assertTrue(flags['nbi_clearance']['is_expired'])
+        self.assertTrue(flags['nbi_clearance']['can_replace'])
+        self.assertFalse(flags['police_clearance']['can_replace'])
+        with patch('cloudinary.uploader.upload', return_value={'public_id': 'renewal'}), \
+             patch('verifications.services.document_processor.process_document_async'):
+            response = self.client.post('/api/v1/verifications/upload/', {
+                'document_type': 'nbi_clearance', 'document_image': image_file(),
+            }, format='multipart')
+            self.assertEqual(response.status_code, 201, response.data)
+            duplicate = self.client.post('/api/v1/verifications/upload/', {
+                'document_type': 'nbi_clearance', 'document_image': image_file(),
+            }, format='multipart')
+        self.assertEqual(duplicate.status_code, 409)
+        self.nbi.refresh_from_db(); self.police.refresh_from_db()
+        self.assertEqual(self.nbi.verification_status, 'Verified')
+        self.assertEqual(self.nbi.document_url, 'expiry-nbi_clearance')
+        self.assertEqual(self.police.verification_status, 'Verified')
+        self.assertEqual(Document.objects.filter(user_profile=self.worker, document_type='nbi_clearance').count(), 2)
+        renewal = Document.objects.get(pk=response.data['document_id'])
+        self.assertEqual(renewal.verification_status, 'Pending')
+        self.assertIsNone(renewal.valid_until)
+        self.assertIsNone(renewal.verifyBy)
+        self.assertEqual(renewal.extracted_data, {})
+        after = self.client.get('/api/v1/verifications/status/').data
+        self.assertEqual(after['overall_status'], 'Pending')
+        self.assertFalse(after['renewal_required'], 'Historical expiry cannot override a new submission')
+        self.assertTrue(after['renewal_pending'])
+        self.worker.refresh_from_db()
+        with self.assertRaises(PermissionDenied):
+            ensure_eligible_pair(self.user('Homeowner'), self.worker)
+        renewal.valid_until = self.today + timedelta(days=90)
+        renewal.verification_status = 'Verified'; renewal.save()
+        approved = self.client.get('/api/v1/verifications/status/').data
+        self.assertEqual(approved['overall_status'], 'Verified')
+        self.assertFalse(approved['renewal_required'])
+        self.assertFalse(approved['renewal_pending'])
+
+    def test_valid_approvals_and_pending_submissions_stay_locked(self):
+        self.client.force_authenticate(self.worker)
+        for status, days in [('Verified', 0), ('Verified', 1), ('Pending', -1)]:
+            self.nbi.verification_status = status
+            self.nbi.valid_until = self.today + timedelta(days=days)
+            self.nbi.save()
+            with patch('cloudinary.uploader.upload') as cloud:
+                response = self.client.post('/api/v1/verifications/upload/', {
+                    'document_type': 'nbi_clearance', 'document_image': image_file(),
+                }, format='multipart')
+            self.assertEqual(response.status_code, 409, (status, days, response.data))
+            cloud.assert_not_called()
+
+    def test_existing_unverified_submission_can_still_be_replaced(self):
+        self.nbi.verification_status = 'Unverified'; self.nbi.save()
+        self.client.force_authenticate(self.worker)
+        with patch('cloudinary.uploader.upload', return_value={'public_id': 'new-nbi'}), \
+             patch('verifications.services.document_processor.process_document_async'):
+            response = self.client.post('/api/v1/verifications/upload/', {
+                'document_type': 'nbi_clearance', 'document_image': image_file(),
+            }, format='multipart')
+        self.assertEqual(response.status_code, 201, response.data)
 
     def test_expired_worker_cannot_post_or_accept_even_before_manual_processing(self):
         owner = self.user('Homeowner')
@@ -218,6 +286,40 @@ class ClearanceExpiryTests(APITestCase):
 
 
 class ClearanceExpiryConcurrencyTests(AuditTransactionTestCase):
+
+    @skipUnlessDBFeature('has_select_for_update')
+    def test_two_simultaneous_renewals_create_only_one_pending_submission(self):
+        from verifications.services.document_upload import create_uploaded_document, DocumentAlreadySubmitted
+        worker = User.objects.create_user(username='renewal-race', email='renewal-race@test.com', account_type='Kasambahay')
+        old = Document.objects.create(user_profile=worker, document_type='police_clearance', document_url='old',
+                                      verification_status='Verified',
+                                      valid_until=timezone.localdate(timezone=PH_TIME) - timedelta(days=1))
+        barrier = Barrier(2)
+
+        def upload_image(*args, **kwargs):
+            barrier.wait(timeout=10)
+            return {'public_id': 'renewal-race'}
+
+        def renew():
+            close_old_connections()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SET lock_timeout = '5s'")
+                create_uploaded_document(User.objects.get(pk=worker.pk), image_file(), {'document_type': 'police_clearance'})
+                return 201
+            except DocumentAlreadySubmitted:
+                return 409
+            finally:
+                close_old_connections()
+
+        with patch('cloudinary.uploader.upload', side_effect=upload_image), \
+             patch('verifications.services.document_processor.process_document_async'), \
+             ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: renew(), range(2)))
+        self.assertEqual(sorted(results), [201, 409])
+        self.assertEqual(Document.objects.filter(user_profile=worker, verification_status='Pending').count(), 1)
+        old.refresh_from_db()
+        self.assertEqual(old.verification_status, 'Verified')
 
     @skipUnlessDBFeature('has_select_for_update')
     def test_two_officers_submitting_the_same_preview_cannot_duplicate_decisions_or_notifications(self):
