@@ -107,9 +107,11 @@ class PenaltyManagementTests(APITestCase):
         first = self.client.get(BASE + 'users/?points=2')
         second = self.client.get(BASE + 'users/?points=2&page=2')
         self.assertEqual(first.data['count'], 11)
-        self.assertEqual(len(first.data['results']), 10)
-        self.assertEqual(len(second.data['results']), 1)
-        self.assertEqual({item['penalty_points'] for item in first.data['results'] + second.data['results']}, {2})
+        third = self.client.get(BASE + 'users/?points=2&page=3')
+        self.assertEqual(len(first.data['results']), 5)
+        self.assertEqual(len(second.data['results']), 5)
+        self.assertEqual(len(third.data['results']), 1)
+        self.assertEqual({item['penalty_points'] for item in first.data['results'] + second.data['results'] + third.data['results']}, {2})
 
     def test_residents_and_suspended_or_inactive_officials_cannot_read_write_or_export(self):
         for actor in [self.home, self.person('Barangay', barangay='Bugo', is_active=False), self.person('Admin', is_account_suspended=True)]:
