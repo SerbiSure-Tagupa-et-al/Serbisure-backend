@@ -258,6 +258,7 @@ class PublicPendingPostSerializer(BookingFeedSerializer):
 
 
 class BookingDetailSerializer(PostStateSerializerMixin, serializers.ModelSerializer):
+    pass_url = serializers.SerializerMethodField()
     schedule_expired = serializers.SerializerMethodField()
     post_status = serializers.SerializerMethodField()
     can_repost = serializers.SerializerMethodField()
@@ -273,6 +274,7 @@ class BookingDetailSerializer(PostStateSerializerMixin, serializers.ModelSeriali
         model = tbl_booking
         fields = [
             'booking_id',
+            'pass_url',
             'booking_type',
             'work_setup',
             'work_days',
@@ -312,6 +314,16 @@ class BookingDetailSerializer(PostStateSerializerMixin, serializers.ModelSeriali
             'cancelled_at',
             'cancellation_penalty_points',
         ]
+
+    def get_pass_url(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return None
+        person_id = request.user.pk
+        if person_id not in (obj.poster_id_id, obj.recipient_id_id) and not obj.assignments.filter(accepter_id_id=person_id).exists():
+            return None
+        from .gate_pass import gate_pass_url
+        return gate_pass_url(request, obj.pk)
 
     def get_contract_summary(self, obj):
         request = self.context.get('request')

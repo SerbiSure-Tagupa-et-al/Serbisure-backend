@@ -1,6 +1,8 @@
 from datetime import timedelta
 from uuid import uuid4
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
+from django.core import signing
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.utils import timezone
@@ -8,6 +10,7 @@ from rest_framework.test import APITestCase
 from booking.models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal
 from chat.models import tbl_chat_message
 from booking.services import PH_TIME
+from booking.gate_pass import GATE_PASS_SALT, GATE_PASS_MAX_AGE
 
 User = get_user_model()
 
@@ -43,6 +46,9 @@ class ChatOfferTests(APITestCase):
             self.assertEqual(row.work_days, self.payload(recipient)['work_days'])
             self.assertEqual(str(row.daily_start_time), '08:00:00')
             self.assertFalse(response.data['chat_message']['booking_offer']['can_respond'])
+            pass_url = response.data['chat_message']['booking_offer']['booking']['pass_url']
+            self.assertEqual(signing.loads(parse_qs(urlsplit(pass_url).query)['token'][0],
+                salt=GATE_PASS_SALT, max_age=GATE_PASS_MAX_AGE), str(row.pk))
             self.assertEqual(self.client.patch(reverse('booking-accept', kwargs={'booking_id': row.pk})).status_code, 400)
             self.client.force_authenticate(self.other)
             self.assertEqual(self.client.patch(reverse('booking-accept', kwargs={'booking_id': row.pk})).status_code, 403)
@@ -55,6 +61,7 @@ class ChatOfferTests(APITestCase):
             thread = self.client.get(reverse('chat-thread', kwargs={'partner_id': sender.pk})).data
             messages = thread['data'] if isinstance(thread, dict) else thread
             self.assertTrue(messages[-1]['booking_offer']['can_respond'])
+            self.assertTrue(messages[-1]['booking_offer']['booking']['pass_url'])
             self.assertEqual(self.client.patch(reverse('booking-accept', kwargs={'booking_id': row.pk})).status_code, 200)
             row.refresh_from_db()
             self.assertEqual(row.booking_status, 'Accepted')
@@ -62,6 +69,7 @@ class ChatOfferTests(APITestCase):
             thread = self.client.get(reverse('chat-thread', kwargs={'partner_id': sender.pk})).data
             messages = thread['data'] if isinstance(thread, dict) else thread
             self.assertEqual(messages[-1]['booking_offer']['status'], 'Confirmed')
+            self.assertTrue(messages[-1]['booking_offer']['booking']['pass_url'])
 
     def test_idempotency_is_durable_and_changed_terms_cannot_reuse_key(self):
         self.client.force_authenticate(self.owner)

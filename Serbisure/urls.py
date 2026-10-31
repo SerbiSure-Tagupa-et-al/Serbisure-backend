@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from core.health import readiness
+from booking.views_pass import verify_booking_pass
 
 """
 URL configuration for Serbisure project.
@@ -23,6 +24,8 @@ from django.contrib import admin
 from django.urls import path, include
 
 urlpatterns = [
+    path('verify/', verify_booking_pass, name='booking-public-pass'),
+    path('verify/<str:invalid_reference>/', verify_booking_pass, name='booking-invalid-pass'),
     path('api/health/', readiness, name='readiness'),
     path('admin/', admin.site.urls),
     path('api/v1/accounts/', include('accounts.urls')),
