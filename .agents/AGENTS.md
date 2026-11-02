@@ -1,5 +1,13 @@
 # Agent Rules for Serbisure Django Backend
 
+## Mobile release safety and version API
+- Public, read-only `GET /api/v1/app-version/` fetches the latest stable universal APK from `SerbiSure-Tagupa-et-al/SerbiSure-Frontend`. External requests belong in `core/app_releases.py`, not the view.
+- Cache successful metadata for 600 seconds using the dedicated process-local LocMemCache. Cache upstream failures for 30 seconds; return 503 rather than pretending there is no update. Each worker has its own memory cache.
+- Do not add version models, columns, database cache tables or migrations. No backend version edit is required for each release.
+- Only expose official GitHub universal APK URLs. Never select ARM-only assets, drafts, prereleases or incomplete uploads as the current release. No published release is an explicit null response, not a fake version.
+- Keep response field names compatible with the mobile update service. Installed version comparisons happen on the device using its native application version.
+- Never weaken, disable or falsify release workflows, test assertions or required checks to get a failing PR merged. Fix the root cause and retain coverage. Do not deploy or publish to test a change.
+
 ## Project Overview
 - Backend application built with Django and Django REST Framework.
 - Serbisure focuses on service booking and management workflows.

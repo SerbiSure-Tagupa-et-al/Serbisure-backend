@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from core.health import readiness
+from core.views_app_version import app_version
 from booking.views_pass import verify_booking_pass
 
 """
@@ -24,6 +25,7 @@ from django.contrib import admin
 from django.urls import path, include
 
 urlpatterns = [
+    path('api/v1/app-version/', app_version, name='app-version'),
     path('verify/', verify_booking_pass, name='booking-public-pass'),
     path('verify/<str:invalid_reference>/', verify_booking_pass, name='booking-invalid-pass'),
     path('api/health/', readiness, name='readiness'),

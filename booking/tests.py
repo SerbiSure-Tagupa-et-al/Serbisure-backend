@@ -120,20 +120,21 @@ class BookingTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     # --- THE "IDIOT" CASES (VALIDATION ERRORS) ---
-    def test_idiot_time_travel_end_before_start(self):
+    def test_legacy_public_date_range_is_ignored(self):
         self.client.force_authenticate(user=self.verified_user)
         headers = {'HTTP_IDEMPOTENCY_KEY': self.valid_uuid}
         
         payload = self.get_valid_payload()
-        # Idiot sets End time BEFORE start time!
+        # Old APK calendar terms no longer schedule a public advertisement.
         payload['start_time'] = self.future_end.isoformat()
         payload['end_time'] = self.future_start.isoformat()
 
         response = self.client.post(self.url, payload, format='json', **headers)
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("end_time", response.data) # Make sure the error message points to end_time
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data['data']['end_time'])
+        self.assertEqual(response.data['data']['work_days'], [])
 
-    def test_idiot_start_time_in_the_past(self):
+    def test_legacy_public_past_date_is_ignored(self):
         self.client.force_authenticate(user=self.verified_user)
         headers = {'HTTP_IDEMPOTENCY_KEY': self.valid_uuid}
         
@@ -141,8 +142,9 @@ class BookingTests(APITestCase):
         payload['start_time'] = self.past_time.isoformat()
 
         response = self.client.post(self.url, payload, format='json', **headers)
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("start_time", response.data)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertNotEqual(response.data['data']['start_time'], self.past_time.isoformat())
+        self.assertEqual(tbl_booking.objects.get().start_time.astimezone(timezone.get_current_timezone()).date(), timezone.localdate())
 
     def test_idiot_tries_to_hack_booking_status(self):
         """Test to make sure a user cannot force a job to be 'Completed' upon creation"""
