@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework import generics
 from rest_framework.views import APIView
 from .serializers import (
-    BookingSerializer,
+    PublicPostSerializer,
     BookingFeedSerializer,
     PublicPendingPostSerializer,
     BookingDetailSerializer,
@@ -45,7 +45,7 @@ class BookingThrottle(UserRateThrottle):
 
 class BookingView(generics.CreateAPIView):
     throttle_classes = [BookingThrottle]
-    serializer_class = BookingSerializer
+    serializer_class = PublicPostSerializer
     queryset = tbl_booking.objects.all()
     permission_classes = [IsAuthenticated]
 

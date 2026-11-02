@@ -78,9 +78,14 @@ class WorkSetupTests(APITestCase):
         self.assertEqual(response.data[0]['work_setup'], 'stay_out')
         self.client.post(reverse('booking-save-toggle'), {'booking_id': str(row.pk)}, format='json')
         self.assertEqual(self.client.get(reverse('booking-saved-list')).data[0]['work_setup'], 'stay_out')
-        accept_engagement(row.pk, self.worker)
-        response = self.client.get(reverse('booking-detail', kwargs={'booking_id': row.pk}))
+        # An advertisement has no agreed dates; the chat contract is independent.
+        contract = tbl_booking.objects.create(poster_id=self.owner, recipient_id=self.worker, **self.payload())
+        contract.refresh_from_db()
+        accept_engagement(contract.pk, self.worker)
+        response = self.client.get(reverse('booking-detail', kwargs={'booking_id': contract.pk}))
         self.assertEqual(response.data['contract_summary']['work_setup'], 'stay_out')
+        row.refresh_from_db()
+        self.assertEqual(row.booking_status, 'Pending')
 
 
 class WorkSetupMigrationTests(TransactionTestCase):

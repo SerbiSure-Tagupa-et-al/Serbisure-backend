@@ -163,6 +163,31 @@ class BookingSerializer(serializers.ModelSerializer):
         return data
 
 
+class PublicPostSerializer(BookingSerializer):
+    """Advertisements have daily hours; calendar terms belong to chat contracts."""
+
+    start_time = serializers.DateTimeField(required=False, allow_null=True)
+    end_time = serializers.DateTimeField(required=False, allow_null=True)
+
+    def to_internal_value(self, data):
+        # Ignore calendar terms from older APKs, including obsolete date ranges.
+        data = data.copy()
+        for field in ('start_time', 'end_time', 'work_days'):
+            data.pop(field, None)
+        return super().to_internal_value(data)
+
+    def validate(self, data):
+        data = super().validate(data)
+        # start_time is NOT NULL in the existing schema. This storage value is
+        # not an agreed service date and must never be displayed as one.
+        # Use the current instant, not a future shift start: existing acceptance
+        # checks must not mistake the storage placeholder for agreed terms.
+        data['start_time'] = timezone.now()
+        data['end_time'] = None
+        data['work_days'] = []
+        return data
+
+
 class BookingFeedSerializer(PostStateSerializerMixin, serializers.ModelSerializer):
     schedule_expired = serializers.SerializerMethodField()
     post_status = serializers.SerializerMethodField()

@@ -9,7 +9,10 @@ from .services import PH_TIME
 
 
 class EngagementFormTests(APITestCase):
-    """Both form entry points persist the same actual terms, for either account role."""
+    """Chat contracts retain their agreed calendar terms for either account role.
+
+    Public advertisement coverage lives in test_public_advertisements.
+    """
     def setUp(self):
         user = get_user_model()
         self.owner = user.objects.create_user(email='form-owner@test.com', username='form-owner', password='test', account_type='Homeowner', verification_status='Verified')
@@ -35,9 +38,9 @@ class EngagementFormTests(APITestCase):
         return self.client.post(reverse('booking-chat-offer' if chat else 'booking-post'), payload,
             format='json', HTTP_IDEMPOTENCY_KEY=str(uuid4()))
 
-    def test_both_roles_and_entry_points_preserve_full_location_and_long_term_schedule(self):
+    def test_both_roles_chat_contracts_preserve_full_location_and_long_term_schedule(self):
         for sender, receiver in ((self.owner, self.worker), (self.worker, self.owner)):
-            for chat in (False, True):
+            for chat in (True,):
                 terms = self.terms(long_term=True, end_hour=17)
                 response = self.send(sender, receiver, chat, terms)
                 self.assertEqual(response.status_code, 201, response.data)
@@ -53,7 +56,7 @@ class EngagementFormTests(APITestCase):
 
     def test_all_three_short_term_shifts_preserve_selected_date_and_times(self):
         for start_hour, end_hour in ((8, 12), (12, 17), (17, 21), (9, 14), (7, 13)):
-            for chat in (False, True):
+            for chat in (True,):
                 terms = self.terms(start_hour=start_hour, end_hour=end_hour)
                 response = self.send(self.worker, self.owner, chat, terms)
                 self.assertEqual(response.status_code, 201, response.data)
@@ -64,19 +67,19 @@ class EngagementFormTests(APITestCase):
                 self.assertEqual(str(row.daily_end_time), terms['daily_end_time'])
                 self.assertEqual(row.work_days, terms['work_days'])
 
-    def test_both_entry_points_reject_inconsistent_clocks_days_and_unsupported_regions(self):
+    def test_chat_contracts_reject_inconsistent_clocks_days_and_unsupported_regions(self):
         terms = self.terms(long_term=True, end_hour=17)
         other_day = next(day for day in ('M', 'T', 'W', 'Th', 'F', 'S', 'Su') if day not in terms['work_days'])
         for updates in ({'daily_start_time': '09:00:00'}, {'daily_end_time': '18:00:00'},
                         {'work_days': [other_day]}, {'work_days': terms['work_days'] * 2}, {'region': 'Unsupported Region'}):
-            for chat in (False, True):
+            for chat in (True,):
                 response = self.send(self.owner, self.worker, chat, {**terms, **updates})
                 self.assertEqual(response.status_code, 400, response.data)
         self.assertFalse(tbl_booking.objects.exists())
 
-    def test_fixed_duration_calendar_boundary_for_both_roles_and_entry_points(self):
+    def test_chat_fixed_duration_calendar_boundary_for_both_roles(self):
         for sender, receiver in ((self.owner, self.worker), (self.worker, self.owner)):
-            for chat in (False, True):
+            for chat in (True,):
                 for duration in (1, 29, 30, 90):
                     terms = self.terms(long_term=True, end_hour=17)
                     start = datetime.fromisoformat(terms['start_time'])
@@ -88,7 +91,7 @@ class EngagementFormTests(APITestCase):
 
     def test_ongoing_terms_persist_accept_and_return_contract_without_an_end_date(self):
         for sender, receiver in ((self.owner, self.worker), (self.worker, self.owner)):
-            for chat in (False, True):
+            for chat in (True,):
                 terms = {**self.terms(long_term=True, end_hour=17), 'end_time': None}
                 response = self.send(sender, receiver, chat, terms)
                 self.assertEqual(response.status_code, 201, response.data)

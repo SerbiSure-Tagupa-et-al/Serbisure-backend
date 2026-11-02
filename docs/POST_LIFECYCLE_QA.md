@@ -1,15 +1,19 @@
 # Independent public posts and chat offers
 
+Current public-advertisement behavior (November 2, 2026) is documented in
+[PUBLIC_ADVERTISEMENTS.md](PUBLIC_ADVERTISEMENTS.md). Calendar fields remain in
+chat contracts; public creation and management no longer ask for dates or weekdays.
+
 ## Rules
 
 - Public, unbooked Pending posts stay visible regardless of their original service date. Existing account and rate-policy safeguards remain in effect. No age-based hiding, automatic deletion, or scheduled expiration runs.
 - Feed order is always newest creation first (`createdAt` descending); old price-sort parameters cannot reorder it. Category, location and compensation filters still work.
-- `schedule_expired` is calculated for the API response, never stored. The badge uses Philippine calendar dates: a start date before today shows Expired Schedule. The exact scheduled start instant remains the acceptance deadline, so an already elapsed time today also cannot be accepted.
+- Existing `schedule_expired` response fields remain for older clients. Updated public cards do not show expiry badges or calendar schedules. The exact scheduled start instant remains the chat acceptance deadline.
 - Apply Now uses the existing proposal table, saves one application, and persists the interest chat message in the same transaction. Repeated or concurrent taps do not add duplicate applications, messages or counters. Date passage alone does not close an application.
 - Accept remains available only to the proper participant and only while the original schedule is still in the future. Passed offers keep Decline enabled and show: "Cannot accept: Original date has passed. Please send a new offer in chat with an updated date."
 - A new offer sent through chat is an independent booking. Accepting Job B does not modify, close, assign or reject applications on Job Post A. A remains Pending until its owner manually cancels it or accepts a valid application on A itself.
 - Own Recent Posts includes public history. Cancel Post calls the existing cancellation endpoint with `pending_only: true`, a confirmation and zero expected points. The server rechecks this condition under a row lock so a stale action cannot accidentally cancel an accepted contract. Existing contract cancellation behaviour is unchanged.
-- Existing owner reposting creates a separate post without transferring applications. Under the independent-post rules, the owner manually cancels the original listing when it is no longer needed.
+- The owner UI no longer offers rescheduling. The legacy repost endpoint is retained for compatibility. Owners can manually cancel public listings when they are no longer needed.
 - The existing five booking statuses and existing proposal statuses are unchanged. No columns or tables are added for these rules.
 
 ## Source-link removal
