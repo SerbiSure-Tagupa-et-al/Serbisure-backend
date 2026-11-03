@@ -14,6 +14,8 @@ class DocumentAlreadySubmitted(APIException):
 
 
 def document_can_be_replaced(document):
+    if document.document_type == 'profile_photo':
+        return document.verification_status == 'Rejected'
     # Pending submissions stay locked while officials review them.
     return document.verification_status in ('Unverified', 'Rejected') or (
         document.verification_status == 'Verified' and document_is_expired(document)

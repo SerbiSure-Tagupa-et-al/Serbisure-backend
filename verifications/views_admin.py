@@ -30,6 +30,22 @@ class IsAdminOrBarangay(BasePermission):
         )
 
 
+def scoped_documents(reviewer):
+    """Use the same barangay boundary for detail reads and review writes."""
+    qs = tbl_documents.objects.select_related('user_profile', 'verifyBy')
+    if reviewer.account_type == 'Barangay':
+        from accounts.admin_statistics import barangay_name
+        from accounts.models import tbl_user_profile
+        from rest_framework.exceptions import PermissionDenied
+        own = barangay_name(reviewer.barangay).casefold()
+        if not own:
+            raise PermissionDenied('Your account has no assigned barangay.')
+        residents = [pk for pk, barangay in tbl_user_profile.objects.values_list('pk', 'barangay')
+                     if barangay_name(barangay).casefold() == own]
+        qs = qs.filter(user_profile_id__in=residents)
+    return qs
+
+
 def check_and_update_profile_verification(user):
     """
     Checks if user is now fully verified according to their required documents:
@@ -64,7 +80,7 @@ class AdminDocumentListView(generics.ListAPIView):
     serializer_class = AdminDocumentDetailSerializer
 
     def get_queryset(self):
-        qs = tbl_documents.objects.all().select_related('user_profile', 'verifyBy').order_by('-created_at')
+        qs = scoped_documents(self.request.user).order_by('-created_at')
 
         status_filter = self.request.query_params.get('status')
         if status_filter:
@@ -91,6 +107,9 @@ class AdminDocumentDetailView(generics.RetrieveAPIView):
     queryset = tbl_documents.objects.all().select_related('user_profile', 'verifyBy')
     lookup_field = 'document_id'
 
+    def get_queryset(self):
+        return scoped_documents(self.request.user)
+
 
 class AdminDocumentActionView(APIView):
     """
@@ -115,6 +134,12 @@ class AdminDocumentActionView(APIView):
 
         new_status = serializer.validated_data['verification_status']
         rejection_reason = serializer.validated_data.get('rejection_reason', '')
+
+        if document.document_type == 'profile_photo':
+            from .services.profile_photos import review_profile_photo
+            document = review_profile_photo(document_id, request.user, 'approve' if new_status == 'Verified' else 'reject', rejection_reason, request)
+            return Response({'message': 'Photo review saved.', 'document_id': str(document.pk),
+                             'verification_status': document.verification_status, 'rejection_reason': document.rejection_reason})
 
         doc_display = dict(tbl_documents.DOCUMENT_CHOICES).get(
             document.document_type, document.document_type
@@ -201,6 +226,8 @@ class AdminReprocessDocumentView(APIView):
 
     def post(self, request, document_id):
         document = get_object_or_404(tbl_documents, document_id=document_id)
+        if document.document_type == 'profile_photo':
+            return Response({'error': 'Profile photos are reviewed by an official, without OCR.'}, status=400)
         record_audit_log(
             document=document,
             action='REPROCESSED',

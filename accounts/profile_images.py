@@ -6,6 +6,8 @@ from rest_framework.exceptions import APIException
 
 
 def save_profile_image(user, image_file):
+    from verifications.services.profile_photos import check_photo_upload, save_photo_submission
+    check_photo_upload(user)
     started_at = perf_counter()
     result = cloudinary.uploader.upload(
         image_file,
@@ -18,9 +20,11 @@ def save_profile_image(user, image_file):
         raise APIException('Your selfie could not be saved. Please retry.')
 
     started_at = perf_counter()
-    user.profile_link = public_id
-    # Do not overwrite other account fields that may have changed during upload.
-    user.save(update_fields=['profile_link'])
+    if user.account_type in ('Homeowner', 'Kasambahay'):
+        save_photo_submission(user, public_id)
+    else:
+        user.profile_link = public_id
+        user.save(update_fields=['profile_link'])
     return {
         'cloudinary': cloudinary_ms,
         'profile_save': (perf_counter() - started_at) * 1000,

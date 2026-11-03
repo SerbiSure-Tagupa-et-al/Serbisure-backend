@@ -17,7 +17,7 @@ class ProfileImageTests(SimpleTestCase):
     @patch('accounts.profile_images.cloudinary.uploader.upload')
     def test_authenticated_upload_only_saves_profile_field_and_returns_timings(self, upload):
         upload.return_value = {'public_id': 'serbisure_profiles/selfie'}
-        user = SimpleNamespace(profile_link='old-image', save=Mock())
+        user = SimpleNamespace(account_type='Admin', profile_link='old-image', save=Mock())
         timings = save_profile_image(user, 'image-file')
         upload.assert_called_once_with('image-file', folder='serbisure_profiles/', type='authenticated')
         user.save.assert_called_once_with(update_fields=['profile_link'])
@@ -27,7 +27,7 @@ class ProfileImageTests(SimpleTestCase):
 
     @patch('accounts.profile_images.cloudinary.uploader.upload', return_value={})
     def test_missing_cloudinary_confirmation_does_not_replace_existing_selfie(self, upload):
-        user = SimpleNamespace(profile_link='old-image', save=Mock())
+        user = SimpleNamespace(account_type='Admin', profile_link='old-image', save=Mock())
         with self.assertRaises(APIException):
             save_profile_image(user, 'image-file')
         user.save.assert_not_called()
@@ -39,7 +39,7 @@ class ProfileImageTests(SimpleTestCase):
         image = BytesIO()
         Image.new('RGB', (32, 32)).save(image, format='JPEG')
         file = SimpleUploadedFile('selfie.jpg', image.getvalue(), content_type='image/jpeg')
-        user = tbl_user_profile(username='resident', account_type='Homeowner')
+        user = tbl_user_profile(username='official', account_type='Admin')
         user.save = Mock()
         request = APIRequestFactory().put('/api/v1/accounts/profile-image/', {'profile_image': file}, format='multipart')
         force_authenticate(request, user=user)

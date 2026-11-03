@@ -7,8 +7,8 @@ from django.utils import timezone
 
 PH_TIME = ZoneInfo('Asia/Manila')
 REQUIRED_DOCUMENTS = {
-    'Kasambahay': ('nbi_clearance', 'police_clearance'),
-    'Homeowner': ('national_id_front', 'national_id_back'),
+    'Kasambahay': ('nbi_clearance', 'police_clearance', 'profile_photo'),
+    'Homeowner': ('national_id_front', 'national_id_back', 'profile_photo'),
 }
 SERVICES = ('Cleaning', 'Cooking', 'Child_care', 'Caregiver', 'Laundry', 'All-around')
 
@@ -23,6 +23,8 @@ def latest_required_documents(user):
 
 
 def document_is_expired(doc, today=None):
+    if doc.document_type == 'profile_photo':
+        return False
     today = today or timezone.localdate(timezone=PH_TIME)
     return bool(doc.valid_until and doc.valid_until < today)
 

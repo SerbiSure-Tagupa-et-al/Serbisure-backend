@@ -732,6 +732,8 @@ class ProfileImageUploadView(generics.UpdateAPIView):
 
     def update(self, request, *args, **kwargs):
         from time import perf_counter
+        from verifications.services.profile_photos import check_photo_upload
+        check_photo_upload(request.user)
         started_at = perf_counter()
         response = super().update(request, *args, **kwargs)
         timings = {**getattr(self, 'upload_timings', {}), 'profile_request': (perf_counter() - started_at) * 1000}

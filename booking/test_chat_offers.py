@@ -1,3 +1,4 @@
+from accounts.testing import create_verified_test_user
 from datetime import timedelta
 from uuid import uuid4
 from unittest.mock import patch
@@ -17,9 +18,9 @@ User = get_user_model()
 
 class ChatOfferTests(APITestCase):
     def setUp(self):
-        self.owner = User.objects.create_user(email='chat-owner@test.com', username='chat-owner', password='test', account_type='Homeowner', verification_status='Verified')
-        self.worker = User.objects.create_user(email='chat-worker@test.com', username='chat-worker', password='test', account_type='Kasambahay', verification_status='Verified')
-        self.other = User.objects.create_user(email='chat-other@test.com', username='chat-other', password='test', account_type='Kasambahay', verification_status='Verified')
+        self.owner = create_verified_test_user(email='chat-owner@test.com', username='chat-owner', password='test', account_type='Homeowner', verification_status='Verified')
+        self.worker = create_verified_test_user(email='chat-worker@test.com', username='chat-worker', password='test', account_type='Kasambahay', verification_status='Verified')
+        self.other = create_verified_test_user(email='chat-other@test.com', username='chat-other', password='test', account_type='Kasambahay', verification_status='Verified')
         self.key = str(uuid4())
 
     def payload(self, recipient):

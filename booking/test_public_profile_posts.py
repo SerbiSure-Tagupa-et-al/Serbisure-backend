@@ -1,3 +1,4 @@
+from accounts.testing import create_verified_test_user
 import datetime
 import uuid
 from django.contrib.auth import get_user_model
@@ -12,11 +13,11 @@ User = get_user_model()
 
 class PublicProfilePostsTests(APITestCase):
     def setUp(self):
-        self.owner = User.objects.create_user(
+        self.owner = create_verified_test_user(
             email='profile-owner@test.com', password='TestPassword123!',
             username='profile-owner', account_type='Homeowner', verification_status='Verified',
         )
-        self.worker = User.objects.create_user(
+        self.worker = create_verified_test_user(
             email='profile-worker@test.com', password='TestPassword123!',
             username='profile-worker', account_type='Kasambahay', verification_status='Verified',
         )

@@ -10,6 +10,10 @@ class tbl_documents(models.Model):
     def save(self, *args, **kwargs):
         with transaction.atomic(using=kwargs.get('using') or 'default'):
             super().save(*args, **kwargs)
+            if self.document_type == 'profile_photo':
+                # Keep all existing avatar consumers on the current reviewed image.
+                type(self.user_profile).objects.using(self._state.db).filter(pk=self.user_profile_id).update(profile_link=self.document_url)
+                self.user_profile.profile_link = self.document_url
             from accounts.workforce import record_worker_status
             record_worker_status(self.user_profile_id, using=self._state.db)
 
@@ -18,7 +22,8 @@ class tbl_documents(models.Model):
         ('nbi_clearance', 'NBI Clearance'),
         ('police_clearance', 'Police Clearance'),
         ('national_id_front', 'National ID (Front)'),
-        ('national_id_back', 'National ID (Back)')
+        ('national_id_back', 'National ID (Back)'),
+        ('profile_photo', 'Profile Photo'),
     )
 
     VERIFICATION_STATUS_CHOICES = (
@@ -149,7 +154,7 @@ class tbl_documents(models.Model):
         constraints = [
 
             CheckConstraint(
-                condition=Q(document_type__in=['nbi_clearance', 'police_clearance', 'national_id_front', 'national_id_back']),
+                condition=Q(document_type__in=['nbi_clearance', 'police_clearance', 'national_id_front', 'national_id_back', 'profile_photo']),
                 name='valid_document_type_enum'
             ),
 

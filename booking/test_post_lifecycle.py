@@ -1,3 +1,4 @@
+from accounts.testing import create_verified_test_user
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from datetime import datetime, timezone as datetime_timezone
@@ -140,7 +141,7 @@ class PostLifecycleTests(APITestCase):
         self.assertEqual(self.repost(private).status_code, 404)
 
     def test_acceptance_keeps_other_applicants_visible_as_not_selected_and_notifies_them(self):
-        other = User.objects.create_user(email='other-worker@post.test', username='other-worker', account_type='Kasambahay', verification_status='Verified')
+        other = create_verified_test_user(email='other-worker@post.test', username='other-worker', account_type='Kasambahay', verification_status='Verified')
         winner = tbl_booking_proposal.objects.create(booking_id=self.listing, proposer_id=self.worker, proposed_rate=800)
         loser = tbl_booking_proposal.objects.create(booking_id=self.listing, proposer_id=other, proposed_rate=800)
         accept_engagement(self.listing.pk, self.owner, winner.pk)
@@ -218,7 +219,7 @@ class ConcurrentPostLifecycleTests(BookingTransactionTestCase):
 
     def test_two_applicants_cannot_both_be_accepted(self):
         owner, worker = participants()
-        other = User.objects.create_user(email='concurrent-worker@post.test', username='concurrent-worker', account_type='Kasambahay', verification_status='Verified')
+        other = create_verified_test_user(email='concurrent-worker@post.test', username='concurrent-worker', account_type='Kasambahay', verification_status='Verified')
         listing = post(owner)
         proposals = [tbl_booking_proposal.objects.create(booking_id=listing, proposer_id=person, proposed_rate=800) for person in (worker, other)]
         barrier = Barrier(2)
