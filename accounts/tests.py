@@ -1,3 +1,4 @@
+from accounts.testing import create_verified_test_user
 """
 accounts/tests.py
 =================
@@ -1238,7 +1239,7 @@ class TestChangePasswordAPI(TestCase):
 
 class UserSocialLinksTests(APITestCase):
     def setUp(self):
-        self.user = User.objects.create_user(
+        self.user = create_verified_test_user(
             email='social_unit_test@example.com',
             username='social_unit_user',
             password='TestPassword123!',

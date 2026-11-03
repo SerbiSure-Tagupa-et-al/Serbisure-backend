@@ -1,3 +1,4 @@
+from accounts.testing import create_verified_test_user
 from datetime import datetime, timedelta
 from uuid import uuid4
 from django.contrib.auth import get_user_model
@@ -15,8 +16,8 @@ class EngagementFormTests(APITestCase):
     """
     def setUp(self):
         user = get_user_model()
-        self.owner = user.objects.create_user(email='form-owner@test.com', username='form-owner', password='test', account_type='Homeowner', verification_status='Verified')
-        self.worker = user.objects.create_user(email='form-worker@test.com', username='form-worker', password='test', account_type='Kasambahay', verification_status='Verified')
+        self.owner = create_verified_test_user(email='form-owner@test.com', username='form-owner', password='test', account_type='Homeowner', verification_status='Verified')
+        self.worker = create_verified_test_user(email='form-worker@test.com', username='form-worker', password='test', account_type='Kasambahay', verification_status='Verified')
 
     def terms(self, long_term=False, start_hour=8, end_hour=12):
         start = (timezone.now().astimezone(PH_TIME) + timedelta(days=3)).replace(hour=start_hour, minute=0, second=0, microsecond=0)

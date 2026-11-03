@@ -1,3 +1,4 @@
+from accounts.testing import create_verified_test_user
 from datetime import timedelta
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
@@ -18,9 +19,9 @@ User = get_user_model()
 
 
 def participants():
-    return (User.objects.create_user(email='guard-owner@test.com', username='guard-owner',
+    return (create_verified_test_user(email='guard-owner@test.com', username='guard-owner',
                                      password='StrongPassword123!', account_type='Homeowner', verification_status='Verified'),
-            User.objects.create_user(email='guard-worker@test.com', username='guard-worker',
+            create_verified_test_user(email='guard-worker@test.com', username='guard-worker',
                                      password='StrongPassword123!', account_type='Kasambahay', verification_status='Verified'))
 
 
@@ -141,7 +142,7 @@ class EngagementGuardTests(APITestCase):
         self.worker.save(update_fields=['is_restricted'])
         self.client.force_authenticate(self.owner)
         self.assertEqual(self.accept(listing).status_code, 400)
-        other = User.objects.create_user(email='other-owner@test.com', username='other-owner', account_type='Homeowner', verification_status='Verified')
+        other = create_verified_test_user(email='other-owner@test.com', username='other-owner', account_type='Homeowner', verification_status='Verified')
         self.client.force_authenticate(other)
         self.assertEqual(self.accept(listing).status_code, 403)
 
@@ -258,10 +259,12 @@ class PenaltyPointsMigrationTests(BookingTransactionTestCase):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor
         from importlib import import_module
-        owner, _ = participants()
+        owner = User.objects.create_user(email='penalty-history@test.com', username='penalty-history', account_type='Homeowner')
         owner.penalty_points = 2
         owner.is_restricted = True
         owner.save(update_fields=['penalty_points', 'is_restricted'])
+        from verifications.testing import prepare_legacy_schema_test
+        prepare_legacy_schema_test()
         executor = MigrationExecutor(connection)
         previous = [('accounts', '0020_tbl_user_profile_chat_suspended_until_and_more')]
         latest = executor.loader.graph.leaf_nodes()
@@ -284,9 +287,11 @@ class CompensationMigrationTests(BookingTransactionTestCase):
     def test_legacy_amounts_are_preserved_and_require_explicit_monthly_review(self):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor
-        owner, _ = participants()
+        owner = User.objects.create_user(email='compensation-history@test.com', username='compensation-history', account_type='Homeowner')
         row_id = post(owner, booking_type='long_term', rate_period='month', rate_amount='8000').pk
         previous = [('booking', '0011_tbl_saved_post')]
+        from verifications.testing import prepare_legacy_schema_test
+        prepare_legacy_schema_test()
         executor = MigrationExecutor(connection)
         latest = executor.loader.graph.leaf_nodes()
         try:

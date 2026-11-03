@@ -1,3 +1,4 @@
+from accounts.testing import create_verified_test_user
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -14,7 +15,7 @@ class BookingTests(APITestCase):
 
     def setUp(self):
         # Create a verified Homeowner
-        self.verified_user = User.objects.create_user(
+        self.verified_user = create_verified_test_user(
             email='homeowner@test.com',
             password='TestPassword123!',
             username='homeowner1',
@@ -228,7 +229,7 @@ class BookingTests(APITestCase):
 class BookingFeedFilterTests(APITestCase):
 
     def setUp(self):
-        self.homeowner = User.objects.create_user(
+        self.homeowner = create_verified_test_user(
             email='homeowner_feed@test.com',
             password='TestPassword123!',
             username='homeowner_feed',
@@ -238,7 +239,7 @@ class BookingFeedFilterTests(APITestCase):
             verification_status='Verified'
         )
 
-        self.kasambahay = User.objects.create_user(
+        self.kasambahay = create_verified_test_user(
             email='kasambahay_feed@test.com',
             password='TestPassword123!',
             username='kasambahay_feed',
@@ -325,7 +326,7 @@ class BookingFeedFilterTests(APITestCase):
 class BookingLifecycleAndProposalTests(APITestCase):
     def setUp(self):
         now = timezone.now()
-        self.homeowner = User.objects.create_user(
+        self.homeowner = create_verified_test_user(
             email='lifecycle_h@test.com',
             password='TestPassword123!',
             username='lifecycle_h',
@@ -336,7 +337,7 @@ class BookingLifecycleAndProposalTests(APITestCase):
             city='Cagayan de Oro'
         )
 
-        self.kasambahay = User.objects.create_user(
+        self.kasambahay = create_verified_test_user(
             email='lifecycle_k@test.com',
             password='TestPassword123!',
             username='lifecycle_k',
@@ -395,7 +396,7 @@ class BookingLifecycleAndProposalTests(APITestCase):
     def test_cancel_booking(self):
         self.client.force_authenticate(user=self.homeowner)
         url = reverse('booking-cancel', kwargs={'booking_id': self.booking.booking_id})
-        res = self.client.patch(url)
+        res = self.client.patch(url, {'reason': 'Change of household plans'}, format='json')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.booking.refresh_from_db()
         self.assertEqual(self.booking.booking_status, 'Cancelled')

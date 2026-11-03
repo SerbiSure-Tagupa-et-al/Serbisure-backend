@@ -1,3 +1,4 @@
+from accounts.testing import create_verified_test_user
 from datetime import datetime, timedelta
 from unittest.mock import patch
 from uuid import uuid4
@@ -17,8 +18,8 @@ User = get_user_model()
 class BookingPenaltyTests(APITestCase):
     def setUp(self):
         cache.clear()
-        self.owner = User.objects.create_user(username='penalty-owner', email='penalty-owner@test.com', password='test', account_type='Homeowner', verification_status='Verified')
-        self.worker = User.objects.create_user(username='penalty-worker', email='penalty-worker@test.com', password='test', account_type='Kasambahay', verification_status='Verified')
+        self.owner = create_verified_test_user(username='penalty-owner', email='penalty-owner@test.com', password='test', account_type='Homeowner', verification_status='Verified')
+        self.worker = create_verified_test_user(username='penalty-worker', email='penalty-worker@test.com', password='test', account_type='Kasambahay', verification_status='Verified')
         self.now = datetime(2026, 10, 20, 8, tzinfo=PH_TIME)
 
     def booking(self, **kwargs):

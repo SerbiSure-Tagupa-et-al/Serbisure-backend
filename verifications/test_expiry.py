@@ -40,8 +40,11 @@ class ClearanceExpiryTests(APITestCase):
 
     def user(self, role, barangay=''):
         self.sequence += 1
-        return User.objects.create_user(username=f'expiry-{self.sequence}', email=f'expiry-{self.sequence}@test.com',
+        user = User.objects.create_user(username=f'expiry-{self.sequence}', email=f'expiry-{self.sequence}@test.com',
                                         account_type=role, barangay=barangay)
+        if role in ('Kasambahay', 'Homeowner'):
+            Document.objects.create(user_profile=user, document_type='profile_photo', document_url='test/face', verification_status='Verified')
+        return user
 
     def document(self, user, kind, days, status='Verified'):
         return Document.objects.create(user_profile=user, document_type=kind, document_url=f'expiry-{kind}',

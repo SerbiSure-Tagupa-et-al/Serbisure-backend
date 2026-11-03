@@ -43,7 +43,8 @@ def ensure_eligible_pair(poster, accepter):
         assert_booking_unrestricted(person)
         if not person.is_active or person.verification_status != 'Verified':
             raise PermissionDenied('Both participants must be active, unrestricted and verified.')
-        required = ('national_id_front', 'national_id_back') if person.account_type == 'Homeowner' else ('nbi_clearance', 'police_clearance')
+        from accounts.workforce import REQUIRED_DOCUMENTS
+        required = REQUIRED_DOCUMENTS[person.account_type]
         from verifications.models import tbl_documents
         valid_types = set(tbl_documents.objects.filter(
             user_profile=person, verification_status='Verified', document_type__in=required,

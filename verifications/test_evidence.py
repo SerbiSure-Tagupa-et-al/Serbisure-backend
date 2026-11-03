@@ -51,6 +51,8 @@ class VerificationEvidenceTests(APITestCase):
         nbi = tbl_documents.objects.create(user_profile=worker, document_type='nbi_clearance', document_url='nbi', verification_status='Pending')
         police = tbl_documents.objects.create(user_profile=worker, document_type='police_clearance', document_url='police', verification_status='Pending')
         for first, second, applicant in ((self.front, self.back, self.owner), (nbi, police, worker)):
+            tbl_documents.objects.create(user_profile=applicant, document_type='profile_photo',
+                document_url='test/approved-photo', verification_status='Verified')
             def review(document, action):
                 response = self.client.post(f'/api/v1/verifications/admin/review/{document.pk}/',
                     {'action': action, 'rejection_reason': 'Unreadable image'}, format='json')

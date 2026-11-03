@@ -5,6 +5,7 @@ from rest_framework.test import APITestCase
 from .models import tbl_user_profile as User
 from booking.models import tbl_booking, tbl_booking_assignment
 from verifications.models import tbl_documents
+from accounts.testing import create_verified_test_user
 
 
 class AdminStatisticsTests(APITestCase):
@@ -21,7 +22,7 @@ class AdminStatisticsTests(APITestCase):
 
     def user(self, role, barangay, **extra):
         self.sequence += 1
-        return User.objects.create_user(email=f'stats-{self.sequence}@test.com', username=f'stats-{self.sequence}',
+        return create_verified_test_user(email=f'stats-{self.sequence}@test.com', username=f'stats-{self.sequence}',
             password='StrongPassword123!', account_type=role, contact_number=f'+63987654{self.sequence:04}',
             barangay=barangay, first_name='Test', last_name='User', **extra)
 

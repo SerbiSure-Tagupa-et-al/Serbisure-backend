@@ -1,3 +1,4 @@
+from accounts.testing import create_verified_test_user
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -25,7 +26,7 @@ class ReviewTests(APITestCase):
         }).start()
         self.addCleanup(patch.stopall)
         # 1. Verified Homeowner (Poster)
-        self.homeowner = User.objects.create_user(
+        self.homeowner = create_verified_test_user(
             email='homeowner@test.com',
             password='TestPassword123!',
             username='homeowner1',
@@ -37,7 +38,7 @@ class ReviewTests(APITestCase):
         )
 
         # 2. Verified Kasambahay (Worker/Accepter)
-        self.kasambahay = User.objects.create_user(
+        self.kasambahay = create_verified_test_user(
             email='kasambahay@test.com',
             password='TestPassword123!',
             username='kasambahay1',
@@ -49,7 +50,7 @@ class ReviewTests(APITestCase):
         )
 
         # 3. Third Verified User (Not part of any booking = bystander)
-        self.bystander = User.objects.create_user(
+        self.bystander = create_verified_test_user(
             email='bystander@test.com',
             password='TestPassword123!',
             username='bystander1',

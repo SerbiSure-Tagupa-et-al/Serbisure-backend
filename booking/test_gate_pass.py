@@ -1,3 +1,4 @@
+from accounts.testing import create_verified_test_user
 from datetime import datetime, time, timedelta
 from unittest.mock import patch
 from urllib.parse import urlencode
@@ -20,12 +21,12 @@ class GatePassTests(TestCase):
         cache.clear()
         self.addCleanup(cache.clear)
         self.now = datetime(2026, 10, 31, 10, 35, tzinfo=PH_TIME)
-        self.owner = User.objects.create_user(
+        self.owner = create_verified_test_user(
             username='pass-owner', email='private-owner@example.test', account_type='Homeowner',
             first_name='Maria', middle_name='Cruz', last_name='Santos', contact_number='+639123456789',
             profile_link='https://example.test/resident.jpg', verification_status='Verified',
         )
-        self.worker = User.objects.create_user(
+        self.worker = create_verified_test_user(
             username='pass-worker', email='private-worker@example.test', account_type='Kasambahay',
             first_name='Ana', middle_name='Reyes', last_name='Ramos', contact_number='+639987654321',
             profile_link='https://example.test/worker.jpg', verification_status='Verified',

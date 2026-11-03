@@ -1,3 +1,4 @@
+from accounts.testing import create_verified_test_user
 from datetime import timedelta
 from uuid import uuid4
 from django.contrib.auth import get_user_model
@@ -15,9 +16,9 @@ User = get_user_model()
 
 class WorkSetupTests(APITestCase):
     def setUp(self):
-        self.owner = User.objects.create_user(email='setup-owner@test.com', username='setup-owner',
+        self.owner = create_verified_test_user(email='setup-owner@test.com', username='setup-owner',
             password='test', account_type='Homeowner', verification_status='Verified')
-        self.worker = User.objects.create_user(email='setup-worker@test.com', username='setup-worker',
+        self.worker = create_verified_test_user(email='setup-worker@test.com', username='setup-worker',
             password='test', account_type='Kasambahay', verification_status='Verified', user_tags=['Stay-In'])
         self.client.force_authenticate(self.owner)
 
@@ -114,6 +115,8 @@ class WorkSetupMigrationTests(TransactionTestCase):
         owner = User.objects.create_user(email='setup-migration@test.com', username='setup-migration', password='test', account_type='Homeowner')
         previous = [('booking', '0012_explicit_compensation_and_transitions')]
         target = [('booking', '0014_tbl_booking_daily_end_time_and_more'), ('chat', '0006_tbl_chat_message_booking_proposal_and_more')]
+        from verifications.testing import prepare_legacy_schema_test
+        prepare_legacy_schema_test()
         executor = MigrationExecutor(connection)
         latest = executor.loader.graph.leaf_nodes()
         if (not connection.settings_dict['NAME'].startswith('test_')

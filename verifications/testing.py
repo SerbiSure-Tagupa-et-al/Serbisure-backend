@@ -3,6 +3,19 @@ from django.db import connection, transaction
 from django.test import TransactionTestCase
 
 
+def prepare_legacy_schema_test():
+    """Allow historical fixtures across the database-only, irreversible cleanup.
+
+    Its migration has no model-state changes. Only unrecord it in a disposable
+    test DB; the forward migration is still executed when restoring the leaves.
+    """
+    if (not connection.settings_dict['NAME'].startswith('test_')
+            or connection.settings_dict['HOST'] not in ('localhost', '127.0.0.1', '::1')):
+        raise RuntimeError('Migration fixtures require a disposable local test database.')
+    from django.db.migrations.recorder import MigrationRecorder
+    MigrationRecorder(connection).record_unapplied('booking', '0019_remove_legacy_cancel_requests')
+
+
 class AuditTransactionTestCase(TransactionTestCase):
     def _fixture_teardown(self):
         if connection.vendor != 'postgresql':

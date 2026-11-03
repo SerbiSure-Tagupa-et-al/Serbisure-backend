@@ -129,7 +129,7 @@ This document outlines the database schema, models, field types, and choices (en
 | `document_id` | `UUIDField` | Primary Key, Unique |
 | `user_profile` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `verifyBy` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
-| `document_type` | `CharField` | Choices: ['nbi_clearance', 'police_clearance', 'national_id_front', 'national_id_back'] |
+| `document_type` | `CharField` | Choices: ['nbi_clearance', 'police_clearance', 'national_id_front', 'national_id_back', 'profile_photo'] |
 | `document_url` | `CharField` | - |
 | `date_issued` | `DateField` | Null=True, Blank=True |
 | `valid_until` | `DateField` | Null=True, Blank=True |

@@ -2,6 +2,7 @@ from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from .models import tbl_documents
+from core.utils import get_signed_cloudinary_url
 from .serializers import DocumentUploadSerializer, AdminVerificationQueueSerializer
 from verifications.services.audit_logger import record_audit_log
 from rest_framework.throttling import UserRateThrottle
@@ -99,13 +100,8 @@ class UserVerificationStatusView(generics.GenericAPIView):
 
         serialized_docs = UserDocumentStatusSerializer(documents, many=True).data
 
-        # Determine required document types depending on account type
-        if user.account_type == 'Kasambahay':
-            required_docs = ['nbi_clearance', 'police_clearance']
-        elif user.account_type == 'Homeowner':
-            required_docs = ['national_id_front', 'national_id_back']
-        else:
-            required_docs = []
+        from accounts.workforce import REQUIRED_DOCUMENTS
+        required_docs = list(REQUIRED_DOCUMENTS.get(user.account_type, ()))
 
         current = latest_required_documents(user)
         renewal_required = any(document_is_expired(doc) and doc.verification_status != 'Pending' for doc in current)
@@ -121,6 +117,7 @@ class UserVerificationStatusView(generics.GenericAPIView):
             "renewal_required": renewal_required,
             "renewal_pending": renewal_pending,
             "required_documents": required_docs,
+            "profile_link": get_signed_cloudinary_url(user.profile_link, as_avatar=True),
             "user_info": {
                 "first_name": user.first_name,
                 "middle_name": user.middle_name,
@@ -145,6 +142,8 @@ class UserDeleteRejectedDocumentView(generics.GenericAPIView):
         except tbl_documents.DoesNotExist:
             return Response({"error": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        if doc.document_type == 'profile_photo':
+            return Response({'error': 'Please use Retake Photo to replace your photo.'}, status=403)
         if doc.verification_status != 'Rejected':
             return Response(
                 {"error": f"Cannot delete a document with status '{doc.verification_status}'. Only rejected documents can be deleted."},
@@ -209,8 +208,16 @@ class AdminVerificationReviewView(generics.GenericAPIView):
         action = request.data.get('action', '').lower()
         reason = request.data.get('rejection_reason', '')
 
+        if document.document_type == 'profile_photo' and action == 'reject' and (not isinstance(reason, str) or not reason.strip()):
+            return Response({'error': 'Please explain why the photo needs to be retaken.'}, status=400)
+
         if action not in ['approve', 'reject', 'reset']:
             return Response({"error": "action must be 'approve', 'reject', or 'reset'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if document.document_type == 'profile_photo':
+            from .services.profile_photos import review_profile_photo
+            document = review_profile_photo(document_id, request.user, action, reason, request)
+            return Response({'message': 'Photo review saved.', 'document': AdminVerificationQueueSerializer(document).data})
 
         user = document.user_profile
 

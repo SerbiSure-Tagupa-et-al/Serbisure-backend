@@ -44,7 +44,8 @@ def document_needs_retry(document, *, now=None, max_retries=MAX_AUTOMATIC_RETRIE
     last_attempt = document.ocr_last_attempt_at or document.created_at
     active = document.ocr_processing_token and last_attempt > now - PROCESSING_LEASE
     return (
-        document.verification_status == 'Pending'
+        document.document_type != 'profile_photo'
+        and document.verification_status == 'Pending'
         and document.ocr_retry_count < max_retries
         and _needs_analysis(document)
         and not active
@@ -57,7 +58,7 @@ def _claim_document(document_id, *, retry=False, force=False, expected_url=None,
     # Only this short claim uses a row lock. External API calls run after commit.
     with transaction.atomic():
         document = tbl_documents.objects.select_for_update().filter(pk=document_id).first()
-        if document is None or (expected_url is not None and document.document_url != expected_url):
+        if document is None or document.document_type == 'profile_photo' or (expected_url is not None and document.document_url != expected_url):
             return None
         now = timezone.now()
         if (document.ocr_processing_token and document.ocr_last_attempt_at
