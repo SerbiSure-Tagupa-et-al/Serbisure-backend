@@ -16,17 +16,34 @@ GATE_PASS_SALT = 'booking.gate_pass.v1'
 GATE_PASS_MAX_AGE = 86400
 
 
-def generate_gate_pass_token(booking_id):
-    return signing.dumps(str(booking_id), salt=GATE_PASS_SALT)
+def generate_gate_pass_token(booking_id, *, applicant_id=None):
+    reference = str(booking_id)
+    if applicant_id is not None:
+        reference = {'booking_id': reference, 'applicant_id': str(applicant_id)}
+    return signing.dumps(reference, salt=GATE_PASS_SALT)
 
 
-def gate_pass_url(request, booking_id):
-    query = urlencode({'token': generate_gate_pass_token(booking_id)})
+def gate_pass_url(request, booking_id, *, applicant_id=None):
+    query = urlencode({'token': generate_gate_pass_token(booking_id, applicant_id=applicant_id)})
     url = request.build_absolute_uri(f"{reverse('booking-public-pass')}?{query}")
     # Hosted passes use HTTPS even if the application sees an internal HTTP hop.
     if not settings.DEBUG and url.startswith('http://'):
         url = 'https://' + url[len('http://'):]
     return url
+
+
+def is_gate_pass_participant(booking, user_id):
+    return user_id in (booking.poster_id_id, booking.recipient_id_id) or any(
+        assignment.accepter_id_id == user_id for assignment in booking.assignments.all()
+    )
+
+
+def has_pending_pass_application(booking, user_id):
+    return (
+        booking.recipient_id_id is None
+        and booking.booking_status == 'Pending'
+        and booking.proposals.filter(proposer_id=user_id, status='Pending').exists()
+    )
 
 # Presentation states only. Booking statuses and entry rules remain unchanged.
 PASS_WORDING = {
