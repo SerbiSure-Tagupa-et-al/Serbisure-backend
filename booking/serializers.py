@@ -345,10 +345,12 @@ class BookingDetailSerializer(PostStateSerializerMixin, serializers.ModelSeriali
         if not request or not request.user.is_authenticated:
             return None
         person_id = request.user.pk
-        if person_id not in (obj.poster_id_id, obj.recipient_id_id) and not obj.assignments.filter(accepter_id_id=person_id).exists():
-            return None
-        from .gate_pass import gate_pass_url
-        return gate_pass_url(request, obj.pk)
+        from .gate_pass import gate_pass_url, has_pending_pass_application, is_gate_pass_participant
+        if is_gate_pass_participant(obj, person_id):
+            return gate_pass_url(request, obj.pk)
+        if has_pending_pass_application(obj, person_id):
+            return gate_pass_url(request, obj.pk, applicant_id=person_id)
+        return None
 
     def get_contract_summary(self, obj):
         request = self.context.get('request')

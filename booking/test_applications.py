@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from datetime import timedelta
+from urllib.parse import urlsplit
 from unittest.mock import patch
 
 from django.db import close_old_connections
@@ -8,6 +9,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
+from accounts.testing import create_verified_test_user
 from chat.models import tbl_chat_message
 from notifications.models import tbl_notification
 from .models import tbl_booking_proposal
@@ -47,6 +49,52 @@ class JobApplicationTests(APITestCase):
         self.assertEqual(tbl_chat_message.objects.count(), 2)
         self.assertEqual(tbl_notification.objects.filter(receiver_id=self.owner).count(), 1)
         self.assertEqual(len(self.client.get(reverse('booking-my-proposals')).data), 1)
+
+    def test_application_pass_works_in_chat_and_details_and_tracks_selection(self):
+        detail_url = reverse('booking-detail', kwargs={'booking_id': self.listing.pk})
+        thread_url = reverse('chat-thread', kwargs={'partner_id': self.owner.pk})
+        self.assertIsNone(self.client.get(detail_url).data['pass_url'])
+
+        application = self.client.post(self.url, self.body, format='json')
+        self.assertEqual(application.status_code, 201, application.data)
+        pass_url = self.client.get(detail_url).data['pass_url']
+        messages = self.client.get(thread_url).data['data']
+        offer = next(message['booking_offer'] for message in messages if message['booking_offer'])
+        self.assertTrue(offer['booking']['pass_url'])
+        self.assertEqual(offer['status'], 'Pending')
+
+        def scan(url):
+            parts = urlsplit(url)
+            return APIClient().get(f'{parts.path}?{parts.query}')
+
+        for url in (pass_url, offer['booking']['pass_url']):
+            pending = scan(url)
+            self.assertEqual(pending.status_code, 200)
+            self.assertEqual(pending.context['pass_state'], 'pending')
+            self.assertFalse(pending.context['entry_allowed'])
+            self.assertNotIn('worker', pending.context)
+
+        other = create_verified_test_user(username='another-applicant', email='another-applicant@test.com',
+                                          account_type='Kasambahay', verification_status='Verified')
+        self.client.force_authenticate(other)
+        self.assertEqual(self.client.post(self.url, self.body, format='json').status_code, 201)
+        other_pass = self.client.get(detail_url).data['pass_url']
+        self.assertEqual(scan(other_pass).status_code, 200)
+
+        self.client.force_authenticate(self.owner)
+        accepted = self.client.patch(
+            reverse('booking-proposals-respond', kwargs={'proposal_id': application.data['proposal']['proposal_id']}),
+            {'action': 'accept'}, format='json',
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.data)
+        self.client.force_authenticate(self.worker)
+        refreshed = self.client.get(detail_url).data
+        self.assertEqual(refreshed['booking_status'], 'Accepted')
+        self.assertTrue(refreshed['pass_url'])
+        self.assertEqual(scan(pass_url).status_code, 200)
+        self.client.force_authenticate(other)
+        self.assertIsNone(self.client.get(detail_url).data['pass_url'])
+        self.assertEqual(scan(other_pass).status_code, 404)
 
     def test_passed_schedule_can_be_applied_to_once_but_cannot_be_accepted(self):
         self.listing.start_time = timezone.now()-timedelta(days=1)

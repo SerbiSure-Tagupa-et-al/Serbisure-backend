@@ -9,7 +9,14 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_safe
 from rest_framework.throttling import SimpleRateThrottle
 
-from .gate_pass import GATE_PASS_MAX_AGE, GATE_PASS_SALT, pass_details, pass_status
+from .gate_pass import (
+    GATE_PASS_MAX_AGE,
+    GATE_PASS_SALT,
+    has_pending_pass_application,
+    is_gate_pass_participant,
+    pass_details,
+    pass_status,
+)
 from .models import tbl_booking, tbl_booking_assignment
 
 
@@ -37,21 +44,32 @@ def verify_booking_pass(request, invalid_reference=None):
             if not token or len(token) > 512:
                 raise signing.BadSignature('Invalid pass token')
             value = signing.loads(token, salt=GATE_PASS_SALT, max_age=GATE_PASS_MAX_AGE)
-            if not isinstance(value, str):
+            applicant_id = None
+            if isinstance(value, str):
+                booking_id = UUID(value)
+            elif isinstance(value, dict) and value.keys() == {'booking_id', 'applicant_id'}:
+                if not all(isinstance(part, str) for part in value.values()):
+                    raise signing.BadSignature('Invalid pass reference')
+                booking_id = UUID(value['booking_id'])
+                applicant_id = UUID(value['applicant_id'])
+            else:
                 raise signing.BadSignature('Invalid pass reference')
-            booking_id = UUID(value)
             booking = tbl_booking.objects.select_related('poster_id').prefetch_related(
                 'poster_id__documents', Prefetch('assignments', queryset=tbl_booking_assignment.objects.select_related(
                     'accepter_id').prefetch_related('accepter_id__documents')),
             ).filter(pk=booking_id).first()
-            if booking is not None:
+            if booking is not None and (
+                applicant_id is None
+                or is_gate_pass_participant(booking, applicant_id)
+                or has_pending_pass_application(booking, applicant_id)
+            ):
                 context = pass_details(booking)
                 code = 200
         except signing.SignatureExpired:
             code = 410
             context.update(pass_status('token_expired'))
         except (signing.BadSignature, ValueError, TypeError):
-            # Invalid signatures and signed non-UUID payloads disclose no data.
+            # Invalid signatures and malformed signed references disclose no data.
             pass
         except DatabaseError:
             code = 503
