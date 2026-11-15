@@ -200,6 +200,13 @@ class VerificationWorkflowTests(APITestCase):
     @patch("cloudinary.uploader.upload")
     def test_admin_and_barangay_approval_flow(self, mock_cloudinary):
         mock_cloudinary.return_value = {"public_id": "test_public_id_nbi"}
+        for account in (self.kasambahay, self.barangay):
+            account.barangay = "Agusan"
+            account.save(update_fields=["barangay"])
+        tbl_documents.objects.create(
+            user_profile=self.kasambahay, document_type="profile_photo",
+            document_url="verified-test-photo", verification_status="Verified",
+        )
         self.client.force_authenticate(user=self.kasambahay)
 
         res = self.client.post(self.upload_url, {
@@ -244,7 +251,7 @@ class VerificationWorkflowTests(APITestCase):
         action_url2 = reverse("admin-document-action", kwargs={"document_id": police_doc_id})
         self.client.patch(action_url2, {"verification_status": "Verified"})
 
-        # Now that BOTH clearances are Verified, Kasambahay profile is automatically Verified!
+        # Both clearances and the existing profile photo are now verified.
         self.kasambahay.refresh_from_db()
         self.assertEqual(self.kasambahay.verification_status, "Verified")
 

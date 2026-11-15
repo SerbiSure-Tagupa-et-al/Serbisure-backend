@@ -2,6 +2,21 @@ import re
 from datetime import date
 from difflib import SequenceMatcher
 
+from .document_fields import CORRECTIONS_KEY, NAME_FIELDS, NUMBER_KEYS
+
+
+_NAME_LABEL_TEXT = {
+    "first_name": r"(?:first|given) name(?:s|\(s\))?(?:\s*/\s*mga pangalan)?|mga pangalan(?:\s*/\s*(?:first|given) name(?:s|\(s\))?)?",
+    "middle_name": r"middle names?(?:\s*/\s*gitnang apelyido)?|gitnang apelyido(?:\s*/\s*middle names?)?",
+    "last_name": r"(?:last name|surname)(?:\s*/\s*apelyido)?|apelyido(?:\s*/\s*(?:last name|surname))?",
+}
+_NAME_LABELS = {
+    field: re.compile(rf"^(?:{label})(?:\s*:\s*|\s+|$)(.*)$", re.IGNORECASE)
+    for field, label in _NAME_LABEL_TEXT.items()
+}
+_OTHER_LABEL = re.compile(r"^(?:date of birth|birth ?date|petsa|address|tirahan|sex|document|philsys)\b", re.IGNORECASE)
+_PRINTED_NAME = re.compile(r"[^\W\d_]+(?:[ .’'-]+[^\W\d_]+)*\.?", re.UNICODE)
+_MISSING_VALUES = {"n/a", "none", "null", "not detected", "not detected in ocr", "not available", "unknown", "unreadable"}
 
 def normalize_string(val: str | None) -> str:
     """Normalize string by uppercasing, trimming, and stripping punctuation."""
@@ -9,6 +24,62 @@ def normalize_string(val: str | None) -> str:
         return ""
     cleaned = re.sub(r"[^A-Za-z0-9\s]", "", str(val))
     return " ".join(cleaned.upper().split())
+
+
+def normalize_document_names(extracted_data: dict, raw_text: str | None) -> dict:
+    """Use printed name fields when available, leaving reviewer corrections intact."""
+    if any(field in (extracted_data.get(CORRECTIONS_KEY) or {}) for field in NAME_FIELDS):
+        return extracted_data
+    lines = [" ".join(line.split()) for line in (raw_text or "").splitlines() if line.strip()]
+    labeled = {}
+    for index, line in enumerate(lines):
+        for field, pattern in _NAME_LABELS.items():
+            match = pattern.fullmatch(line)
+            if not match:
+                continue
+            value = match[1] or (lines[index + 1] if index + 1 < len(lines) else "")
+            if (_PRINTED_NAME.fullmatch(value)
+                    and value.casefold() not in _MISSING_VALUES
+                    and not _OTHER_LABEL.match(value)
+                    and not any(label.fullmatch(value) for label in _NAME_LABELS.values())):
+                labeled[field] = value
+            break
+
+    if "first_name" in labeled and "last_name" in labeled:
+        result = {**extracted_data, **labeled}
+        if any(result.get(field) != extracted_data.get(field) for field in NAME_FIELDS) or not result.get("full_name"):
+            result["full_name"] = " ".join(str(result[field]).strip() for field in NAME_FIELDS if result.get(field))
+        return result
+
+    first, last, full = (normalize_string(extracted_data.get(field)) for field in ("first_name", "last_name", "full_name"))
+    # An OCR surname followed by more name words may be the second given name.
+    if first and last and full.startswith(f"{first} {last} ") and not full.endswith(f" {last}"):
+        return {**extracted_data, **dict.fromkeys(NAME_FIELDS)}
+    return extracted_data
+
+
+def missing_identity_warning(extracted_data: dict, document_type: str, raw_text: str | None) -> dict | None:
+    """Flag completed OCR with no usable identity fields for manual review."""
+    if raw_text is None or document_type == "profile_photo":
+        return None
+    fields = (*NAME_FIELDS, "full_name", "name", "date_of_birth", *NUMBER_KEYS)
+    if document_type == "national_id_back":
+        fields += ("blood_type", "date_issued")
+    for field in fields:
+        value = extracted_data.get(field)
+        if isinstance(value, (str, int)) and not isinstance(value, bool):
+            text = str(value).strip()
+            if text.casefold() not in _MISSING_VALUES and any(char.isalnum() for char in text):
+                return None
+    return {
+        "field": "image_quality",
+        "severity": "high",
+        "message": (
+            "No readable ID details detected by OCR — please check if the uploaded image is valid."
+            if any(char.isalnum() for char in raw_text)
+            else "No readable text detected by OCR — please check if the uploaded image is valid."
+        ),
+    }
 
 
 def calculate_similarity(s1: str | None, s2: str | None) -> float:
@@ -35,13 +106,16 @@ def calculate_similarity(s1: str | None, s2: str | None) -> float:
     return SequenceMatcher(None, norm1, norm2).ratio()
 
 
-def detect_discrepancies(extracted_data: dict, user_profile) -> tuple[float | None, list[dict]]:
+def detect_discrepancies(
+    extracted_data: dict, user_profile, *, document_type: str = "", raw_text: str | None = None,
+) -> tuple[float | None, list[dict]]:
     """
     Compare extracted document data against user_profile.
     Returns:
         (ocr_match_score: percentage from 0 to 100, or None if no comparable fields, discrepancies)
     """
-    discrepancies: list[dict] = []
+    warning = missing_identity_warning(extracted_data, document_type, raw_text)
+    discrepancies = [warning] if warning else []
     field_scores: list[float] = []
 
     # 1. Compare First Name

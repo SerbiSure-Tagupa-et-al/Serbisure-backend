@@ -1,9 +1,11 @@
+from datetime import date
 from unittest.mock import patch
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from rest_framework.test import APITestCase
 from .models import tbl_documents
 from .serializers import AdminVerificationQueueSerializer
-from .services.matching_service import detect_discrepancies
+from .services.matching_service import detect_discrepancies, normalize_document_names
 from .ocr_service import parse_extracted_document
 
 User = get_user_model()
@@ -43,6 +45,83 @@ class VerificationEvidenceTests(APITestCase):
         self.assertEqual(back['userId'], front['userId'])
         self.assertNotEqual(front['id'], back['id'])
         self.assertIn('T', front['submittedAt'])
+        self.assertEqual(front['accountRegistration'], {
+            'first_name': 'Maria', 'middle_name': None, 'last_name': 'Santos',
+            'date_of_birth': None, 'address': None, 'barangay': None, 'city': None,
+        })
+
+    def test_both_staff_roles_see_printed_names_and_quality_flags_for_existing_ocr(self):
+        self.owner.first_name = 'Christine'
+        self.owner.middle_name = 'Cruz'
+        self.owner.last_name = 'Santos'
+        self.owner.date_of_birth = date(2002, 1, 1)
+        self.owner.street = 'Lot 3'
+        self.owner.barangay = 'Agusan'
+        self.owner.city = 'Cagayan de Oro'
+        self.owner.province = 'Misamis Oriental'
+        self.owner.zipcode = '9000'
+        self.owner.save()
+        barangay = User.objects.create_user(
+            email='evidence-barangay@test.com', username='evidence-barangay',
+            account_type='Barangay', barangay='Agusan',
+        )
+        self.front.ocr_processed_at = timezone.now()
+        self.front.ocr_raw_text = 'Apelyido/Last Name\nTAGUPA\nGiven Names / Mga Pangalan\nJAMES CHRISTOPHER'
+        self.front.extracted_data = {'first_name': 'JAMES', 'last_name': 'CHRISTOPHER'}
+        self.front.ocr_discrepancies = [
+            {'field': 'last_name', 'document_value': 'CHRISTOPHER', 'severity': 'high'},
+            {'field': 'date_of_birth', 'severity': 'high'},
+        ]
+        self.front.save()
+        self.back.ocr_processed_at = timezone.now()
+        self.back.ocr_raw_text = ''
+        self.back.save()
+
+        for actor in (self.admin, barangay):
+            with self.subTest(role=actor.account_type):
+                self.client.force_authenticate(actor)
+                response = self.client.get('/api/v1/verifications/admin/queue/')
+                self.assertEqual(response.status_code, 200, response.data)
+                rows = {row['id']: row for row in response.data}
+                front, back = rows[str(self.front.pk)], rows[str(self.back.pk)]
+                self.assertEqual(front['accountName'], 'Christine Cruz Santos')
+                self.assertEqual(front['accountRegistration'], {
+                    'first_name': 'Christine', 'middle_name': 'Cruz', 'last_name': 'Santos',
+                    'date_of_birth': '2002-01-01',
+                    'address': 'Lot 3, Agusan, Cagayan de Oro, Misamis Oriental, 9000',
+                    'barangay': 'Agusan', 'city': 'Cagayan de Oro',
+                })
+                self.assertEqual(back['accountRegistration'], front['accountRegistration'])
+                self.assertEqual(front['ocrExtractedData']['full_name'], 'JAMES CHRISTOPHER TAGUPA')
+                flags = {flag['field']: flag for flag in front['ocrDiscrepancies']}
+                self.assertEqual(flags['first_name']['document_value'], 'JAMES CHRISTOPHER')
+                self.assertEqual(flags['last_name']['document_value'], 'TAGUPA')
+                self.assertIn('date_of_birth', flags)
+                self.assertEqual(back['ocrDiscrepancies'][0]['field'], 'image_quality')
+                self.assertIn('No readable text detected by OCR', back['ocrDiscrepancies'][0]['message'])
+                self.assertEqual(back['recordStatus'], 'Flagged')
+
+    def test_full_name_with_uncertain_parts_uses_document_evidence_without_guessing(self):
+        data = {'full_name': 'MARIA TERESA SANTOS', 'first_name': 'MARIA', 'last_name': 'TERESA'}
+        normalized = normalize_document_names(data, 'MARIA TERESA SANTOS')
+        self.assertEqual(normalized['full_name'], data['full_name'])
+        self.assertIsNone(normalized['first_name'])
+        self.assertIsNone(normalized['last_name'])
+        _, flags = detect_discrepancies(normalized, self.owner)
+        self.assertEqual(flags, [])
+
+    def test_unreadable_and_irrelevant_ocr_is_flagged_without_a_match_score(self):
+        for text, message in (('', 'No readable text'), ('Screenshot: Settings', 'No readable ID details')):
+            score, flags = detect_discrepancies({}, self.owner, document_type='national_id_front', raw_text=text)
+            self.assertIsNone(score)
+            self.assertEqual(flags[0]['field'], 'image_quality')
+            self.assertIn(message, flags[0]['message'])
+        for doc_type, evidence in (('national_id_back', {'blood_type': 'O+'}), ('profile_photo', {})):
+            self.assertEqual(detect_discrepancies(evidence, self.owner, document_type=doc_type, raw_text=''), (None, []))
+        self.assertEqual(AdminVerificationQueueSerializer(self.back).data['ocrDiscrepancies'], [])
+        self.back.ocr_raw_text = 'Date issued: Nov 10, 2025'
+        self.back.extracted_data = {'date_issued': '2025-11-10'}
+        self.assertEqual(AdminVerificationQueueSerializer(self.back).data['ocrDiscrepancies'], [])
 
     def test_each_document_retains_its_own_status_reviewer_and_audit_history(self):
         from .models import tbl_audit_logs

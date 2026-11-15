@@ -13,7 +13,7 @@ from accounts.workforce import latest_required_documents
 from verifications.models import tbl_documents
 from verifications.services.audit_logger import record_audit_log
 from verifications.services.document_fields import CORRECTIONS_KEY, NUMBER_KEYS, merge_document_fields
-from verifications.services.matching_service import detect_discrepancies
+from verifications.services.matching_service import detect_discrepancies, normalize_document_names
 
 PROFILE_FIELDS = ('first_name', 'middle_name', 'last_name', 'date_of_birth')
 DOCUMENT_FIELDS = (*PROFILE_FIELDS, 'document_number', 'date_issued', 'valid_until')
@@ -49,7 +49,8 @@ def json_value(value):
 
 def correction_details(document, user=None):
     user = user or document.user_profile
-    extracted = document.extracted_data or {}
+    stored = document.extracted_data or {}
+    extracted = normalize_document_names(stored, document.ocr_raw_text)
     profile = {key: json_value(getattr(user, key)) for key in PROFILE_FIELDS}
     details = {key: str(extracted[key]) if extracted.get(key) is not None else None for key in PROFILE_FIELDS}
     details.update({key: json_value(getattr(document, key)) for key in ('document_number', 'date_issued', 'valid_until')})
@@ -58,7 +59,7 @@ def correction_details(document, user=None):
     # Include the source image and analysis in the version so a renewal or OCR
     # result arriving after the form opened cannot receive stale corrections.
     version_data = [str(document.pk), document.document_type, user.account_type, user.barangay,
-                    profile, details, extracted, document.document_url,
+                    profile, details, stored, document.document_url,
                     str(document.created_at), document.verification_status]
     version = hashlib.sha256(json.dumps(version_data, sort_keys=True, default=str).encode()).hexdigest()
     return {'version': version, 'profile': profile, 'document': details, 'document_type': document.document_type}
@@ -107,7 +108,8 @@ def save_corrections(actor, document_id, values, request=None):
         user.save(update_fields=list(changed_profile))
     if changed_document:
         corrections = {**(document.extracted_data or {}).get(CORRECTIONS_KEY, {}), **changed_document}
-        document.extracted_data = merge_document_fields(document.extracted_data, corrections, document.document_type)
+        extracted = normalize_document_names(document.extracted_data or {}, document.ocr_raw_text)
+        document.extracted_data = merge_document_fields(extracted, corrections, document.document_type)
         document.extracted_data[CORRECTIONS_KEY] = corrections
         for key in ('document_number', 'date_issued', 'valid_until'):
             if key in changed_document:
@@ -118,7 +120,10 @@ def save_corrections(actor, document_id, values, request=None):
                                       'ocr_processed_at', 'ocr_processing_token'])
     for doc in documents:
         if changed_profile or doc.pk == document.pk:
-            score, flags = detect_discrepancies(doc.extracted_data or {}, user)
+            score, flags = detect_discrepancies(
+                normalize_document_names(doc.extracted_data or {}, doc.ocr_raw_text),
+                user, document_type=doc.document_type, raw_text=doc.ocr_raw_text,
+            )
             tbl_documents.objects.filter(pk=doc.pk).update(
                 ocr_match_score=score, ocr_discrepancies=flags, ocr_processing_token=None,
             )

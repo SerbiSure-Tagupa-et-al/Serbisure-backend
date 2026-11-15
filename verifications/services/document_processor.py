@@ -19,7 +19,7 @@ from verifications.services.groq_service import (
     extract_structured_data_from_text,
     extract_from_image_vision,
 )
-from verifications.services.matching_service import detect_discrepancies
+from verifications.services.matching_service import detect_discrepancies, normalize_document_names
 from verifications.services.document_fields import CORRECTIONS_KEY, merge_document_fields
 
 logger = logging.getLogger(__name__)
@@ -121,12 +121,15 @@ def _process_claimed_document(document):
 
     # Provider output cannot mark itself as a human correction.
     extracted_data.pop(CORRECTIONS_KEY, None)
+    extracted_data = normalize_document_names(extracted_data, raw_text)
     corrections = (document.extracted_data or {}).get(CORRECTIONS_KEY)
     if corrections:
         extracted_data = merge_document_fields(extracted_data, corrections, document.document_type)
         extracted_data[CORRECTIONS_KEY] = corrections
 
-    match_score, discrepancies = detect_discrepancies(extracted_data, document.user_profile)
+    match_score, discrepancies = detect_discrepancies(
+        extracted_data, document.user_profile, document_type=document.document_type, raw_text=raw_text,
+    )
     fields = {
         'ocr_raw_text': raw_text,
         'extracted_data': extracted_data,

@@ -1,7 +1,9 @@
 from rest_framework import serializers
 from accounts.workforce import PH_TIME
 from .models import tbl_documents
+from .services.document_fields import NAME_FIELDS
 from .services.document_upload import create_uploaded_document
+from .services.matching_service import detect_discrepancies, missing_identity_warning, normalize_document_names
 import cloudinary.utils
 
 class DocumentUploadSerializer(serializers.ModelSerializer):
@@ -67,6 +69,8 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
     userId = serializers.UUIDField(source='user_profile_id', read_only=True)
     submittedAt = serializers.DateTimeField(source='created_at', read_only=True)
     name = serializers.SerializerMethodField()
+    accountName = serializers.SerializerMethodField()
+    accountRegistration = serializers.SerializerMethodField()
     role = serializers.SerializerMethodField()
     avatar = serializers.SerializerMethodField()
     documentType = serializers.SerializerMethodField()
@@ -112,7 +116,8 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
     class Meta:
         model = tbl_documents
         fields = [
-            'id', 'userId', 'submittedAt', 'name', 'role', 'avatar', 'documentType', 'rawDocumentType', 'documentNumber',
+            'id', 'userId', 'submittedAt', 'name', 'accountName', 'accountRegistration',
+            'role', 'avatar', 'documentType', 'rawDocumentType', 'documentNumber',
             'submittedDate', 'issuedDate', 'validityDate', 'status', 'primaryStatus', 'recordStatus',
             'applicantStatus', 'isExpired', 'validUntil',
             'documentImage', 'documentImageBack', 'barangay', 'contactNumber', 'email', 'notes',
@@ -122,6 +127,34 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
             'secondaryStatus', 'secondaryNotes', 'secondaryOcrData', 'secondaryOcrDiscrepancies',
             'hasLguCoverage', 'hasDocuments'
         ]
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        if obj.document_type == 'profile_photo':
+            return data
+
+        stored = obj.ocr_extracted_data or {}
+        normalized = normalize_document_names(stored, obj.ocr_raw_text)
+        flags = list(data['ocrDiscrepancies'] or [])
+        if normalized != stored:
+            name_fields = (*NAME_FIELDS, 'full_name', 'name')
+            data['ocrExtractedData'].update({field: normalized[field] for field in name_fields if field in normalized})
+            score, updated = detect_discrepancies(normalized, obj.user_profile)
+            flags = [flag for flag in flags if flag.get('field') not in name_fields]
+            flags.extend(flag for flag in updated if flag.get('field') in name_fields)
+            data['ocrMatchScore'] = score
+
+        raw_text = obj.ocr_raw_text
+        if raw_text is None and obj.ocr_processed_at:
+            raw_text = ''
+        evidence = {**normalized, 'document_number': obj.document_number} if obj.document_number else normalized
+        warning = missing_identity_warning(evidence, obj.document_type, raw_text)
+        if warning and not any(flag.get('field') == 'image_quality' for flag in flags):
+            flags.append(warning)
+        if flags != data['ocrDiscrepancies'] and data['status'] != 'VERIFIED':
+            data['recordStatus'] = 'Flagged' if any(flag.get('severity') == 'high' for flag in flags) else 'Under Review'
+        data['ocrDiscrepancies'] = flags
+        return data
 
     def _get_companion_doc(self, obj):
         # Independent records: package metadata must not mask another document's status.
@@ -156,6 +189,23 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         u = obj.user_profile
         full = f"{u.first_name} {u.last_name}".strip()
         return full or u.username or "Registered User"
+
+    def get_accountName(self, obj):
+        parts = [(getattr(obj.user_profile, field) or '').strip() for field in NAME_FIELDS]
+        name = ' '.join(filter(None, parts))
+        return name or self.get_name(obj)
+
+    def get_accountRegistration(self, obj):
+        profile = obj.user_profile
+        address_fields = ('street', 'barangay', 'city', 'province', 'zipcode')
+        address = {field: (getattr(profile, field) or '').strip() or None for field in address_fields}
+        return {
+            **{field: (getattr(profile, field) or '').strip() or None for field in NAME_FIELDS},
+            'date_of_birth': profile.date_of_birth.isoformat() if profile.date_of_birth else None,
+            'address': ', '.join(part for part in address.values() if part) or None,
+            'barangay': address['barangay'],
+            'city': address['city'],
+        }
 
     def get_role(self, obj):
         acc_type = getattr(obj.user_profile, 'account_type', 'Homeowner')

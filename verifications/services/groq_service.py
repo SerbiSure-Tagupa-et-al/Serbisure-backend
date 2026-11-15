@@ -6,6 +6,14 @@ from groq import Groq
 
 logger = logging.getLogger(__name__)
 
+NAME_INSTRUCTIONS = (
+    "Preserve every word in a printed Given Name(s) or First Name field as first_name, including continuation lines. "
+    "Use the printed Surname or Last Name field for last_name. "
+    "For example, Given Names MARIA TERESA and Last Name REYES means "
+    "first_name MARIA TERESA and last_name REYES. "
+    "If only an unlabeled full name is visible and the parts are uncertain, return full_name and leave the parts null."
+)
+
 DOCUMENT_SCHEMAS = {
     "nbi_clearance": {
         "description": "Philippine NBI Clearance",
@@ -81,7 +89,7 @@ def build_system_prompt(document_type: str) -> str:
         "1. Return ONLY a single valid JSON object containing the specified keys.\n"
         "2. All dates MUST be in YYYY-MM-DD format (convert from English words or MM/DD/YYYY if necessary). If unavailable or unreadable, return null.\n"
         "3. If any field cannot be found or is blurry, set its value to null. Do not invent or guess.\n"
-        "4. Clean and normalize all names to standard casing or UPPERCASE without typos."
+        f"4. {NAME_INSTRUCTIONS}"
     )
 
 
@@ -148,6 +156,7 @@ def extract_from_image_vision(image_bytes: bytes, document_type: str) -> tuple[s
         f"You are verifying a Philippine document of type '{document_type}'.\n"
         "First, read all visible printed text on this document verbatim.\n"
         f"Second, extract the structured fields: {fields_list}.\n\n"
+        f"{NAME_INSTRUCTIONS}\n\n"
         "Return a JSON object with exactly two keys:\n"
         "1. \"raw_text\": A string with all readable text transcribed from the image.\n"
         "2. \"extracted_data\": A JSON dictionary with the extracted fields (dates in YYYY-MM-DD, null if missing)."
