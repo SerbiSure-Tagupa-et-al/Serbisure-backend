@@ -27,7 +27,10 @@ load_dotenv(BASE_DIR / '.env')
 # Private inference credentials: never expose these through the Expo frontend.
 HUGGINGFACE_API_TOKEN = os.environ.get('HUGGINGFACE_API_TOKEN') or os.environ.get('HF_TOKEN', '')
 HUGGINGFACE_SENTIMENT_SPACE_URL = os.environ.get('HUGGINGFACE_SENTIMENT_SPACE_URL', 'https://riasgremory2-serbisure-sentiment-api.hf.space')
-HUGGINGFACE_SENTIMENT_MODEL_ID = 'Rhoii/cebuano-taglish-sentiment'
+HUGGINGFACE_SENTIMENT_MODEL_ID = os.environ.get(
+    'HUGGINGFACE_SENTIMENT_MODEL_ID',
+    'Rhoii/cebuano-taglish-sentiment',
+)
 HUGGINGFACE_SENTIMENT_TIMEOUT_SECONDS = 40
 
 
