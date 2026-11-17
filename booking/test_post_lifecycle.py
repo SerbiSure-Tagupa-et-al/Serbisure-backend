@@ -110,6 +110,16 @@ class PostLifecycleTests(APITestCase):
         self.assertEqual(self.repost(long, schedule(long_term=True)).status_code, 201)
         self.assertEqual(self.repost(long, {**schedule(), 'end_time': None}).status_code, 201)
 
+    def test_dated_short_term_repost_enforces_seven_day_limit(self):
+        expired = post(self.owner, start_time=timezone.now() - timedelta(days=1))
+        terms = schedule()
+        end = datetime.fromisoformat(terms['end_time'])
+        response = self.repost(expired, {**terms, 'end_time': (end + timedelta(days=8)).isoformat()})
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('up to 7 days', str(response.data['end_time']))
+        response = self.repost(expired, {**terms, 'end_time': (end + timedelta(days=7)).isoformat()})
+        self.assertEqual(response.status_code, 201, response.data)
+
     def test_availability_rejects_inactive_and_assigned_posts(self):
         self.owner.is_active = False
         self.owner.save(update_fields=['is_active'])

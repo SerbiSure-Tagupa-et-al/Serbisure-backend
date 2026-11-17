@@ -14,6 +14,19 @@ from .availability import UNAVAILABLE_MESSAGE, PASSED_SCHEDULE_MESSAGE
 
 PH_TIME = ZoneInfo('Asia/Manila')
 SHORT_TERM_CAP = 3
+SHORT_TERM_MAX_DAYS = 7
+
+
+def validate_booking_duration(booking_type, start_time, end_time):
+    if not start_time or not end_time:
+        return
+    days = (end_time.astimezone(PH_TIME).date() - start_time.astimezone(PH_TIME).date()).days
+    if booking_type == 'short_term' and days > SHORT_TERM_MAX_DAYS:
+        raise ValidationError({
+            'end_time': 'The end date for a short-term booking can be up to 7 days after the start date.'
+        })
+    if booking_type == 'long_term' and days < 30:
+        raise ValidationError({'end_time': 'SerbiSure requires at least 30 days for long-term posts. Choose a later end date.'})
 
 
 def month_bounds(at=None):
@@ -58,9 +71,7 @@ def ensure_open(booking, *, require_future=True):
         raise ValidationError({'code': 'post_unavailable', 'error': UNAVAILABLE_MESSAGE})
     if require_future and booking.start_time <= timezone.now():
         raise ValidationError({'code': 'schedule_passed', 'error': PASSED_SCHEDULE_MESSAGE})
-    if (booking.booking_type == 'long_term' and booking.end_time
-            and (booking.end_time.astimezone(PH_TIME).date() - booking.start_time.astimezone(PH_TIME).date()).days < 30):
-        raise ValidationError({'end_time': 'SerbiSure requires at least 30 days for long-term posts. Choose a later end date.'})
+    validate_booking_duration(booking.booking_type, booking.start_time, booking.end_time)
     if booking.rate_needs_review:
         raise ValidationError({'error': 'The poster must confirm the monthly amount on this legacy post before it can be accepted.'})
 

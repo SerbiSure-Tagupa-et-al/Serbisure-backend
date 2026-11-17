@@ -2,7 +2,7 @@ from rest_framework import serializers
 from .models import tbl_booking, tbl_booking_proposal, tbl_saved_post
 from .wage_policy import validate_rate, DOLE_CONTRACT_PDF_URL
 from django.utils import timezone
-from .services import PH_TIME
+from .services import PH_TIME, validate_booking_duration
 from reviews.models import tbl_review
 from django.db.models import Avg
 from core.utils import get_signed_cloudinary_url
@@ -153,12 +153,7 @@ class BookingSerializer(serializers.ModelSerializer):
         if data.get('rate_period') is None:
             raise serializers.ValidationError({'rate_period': 'Specify day for short-term or month for long-term.'})
 
-        # Platform minimum uses Philippine calendar dates, not shift hours.
-        if booking_type == 'long_term' and start_time and end_time:
-            if (end_time.astimezone(PH_TIME).date() - start_time.astimezone(PH_TIME).date()).days < 30:
-                raise serializers.ValidationError({
-                    'end_time': 'SerbiSure requires at least 30 days for long-term posts. Choose a later end date.'
-                })
+        validate_booking_duration(booking_type, start_time, end_time)
 
         return data
 

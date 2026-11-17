@@ -17,7 +17,7 @@ class ShortTermRangeTests(APITestCase):
         self.start = (now + timedelta(days=(5-now.weekday()) % 7 or 7)).replace(hour=8, minute=0, second=0, microsecond=0)
         self.payload = dict(recipient_id=str(self.worker.pk), booking_type='short_term', work_setup='stay_out',
             service_category=['Cleaning'], rate_amount='800', rate_period='day', region='Region X', street='Lot 5555',
-            start_time=self.start.isoformat(), end_time=(self.start+timedelta(days=13, hours=9)).isoformat(),
+            start_time=self.start.isoformat(), end_time=(self.start + timedelta(days=7, hours=9)).isoformat(),
             daily_start_time='08:00:00', daily_end_time='17:00:00', work_days=['M', 'T', 'W', 'Th', 'F'])
         self.client.force_authenticate(self.owner)
 
@@ -28,7 +28,7 @@ class ShortTermRangeTests(APITestCase):
         response = self.send()
         self.assertEqual(response.status_code, 201, response.data)
         booking = tbl_booking.objects.get(pk=response.data['booking']['booking_id'])
-        self.assertEqual(booking.end_time.astimezone(PH_TIME).date(), (self.start+timedelta(days=13)).date())
+        self.assertEqual(booking.end_time.astimezone(PH_TIME).date(), (self.start + timedelta(days=7)).date())
         self.assertEqual(booking.work_days, self.payload['work_days'])
         self.client.force_authenticate(self.worker)
         accepted = self.client.patch(reverse('booking-accept', kwargs={'booking_id': booking.pk}), {}, format='json')
@@ -39,6 +39,24 @@ class ShortTermRangeTests(APITestCase):
             self.assertEqual(details['end_time'], response.data['booking']['end_time'])
             self.assertNotEqual(details['start_time'][:10], details['end_time'][:10])
             self.assertEqual(details['work_days'], self.payload['work_days'])
+
+    def test_offer_over_seven_calendar_days_is_rejected(self):
+        response = self.send(end_time=(self.start + timedelta(days=8, hours=9)).isoformat())
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('up to 7 days', str(response.data['end_time']))
+        self.assertFalse(tbl_booking.objects.exists())
+
+    def test_preexisting_oversized_pending_offer_cannot_be_accepted(self):
+        response = self.send()
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = tbl_booking.objects.get(pk=response.data['booking']['booking_id'])
+        booking.end_time = self.start + timedelta(days=8, hours=9)
+        booking.save(update_fields=['end_time'])
+        self.client.force_authenticate(self.worker)
+        accepted = self.client.patch(reverse('booking-accept', kwargs={'booking_id': booking.pk}), {}, format='json')
+        self.assertEqual(accepted.status_code, 400, accepted.data)
+        self.assertIn('up to 7 days', str(accepted.data['end_time']))
+        self.assertFalse(booking.assignments.exists())
 
     def test_range_requires_at_least_one_selected_workday_inside_it(self):
         response = self.send(end_time=(self.start+timedelta(days=1, hours=9)).isoformat())  # Sat-Sun, Mon-Fri selected.
