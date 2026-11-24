@@ -207,6 +207,8 @@ class AdminVerificationReviewView(generics.GenericAPIView):
 
         action = request.data.get('action', '').lower()
         reason = request.data.get('rejection_reason', '')
+        if document.media_purged_at or not document.document_url:
+            return Response({'error': 'The original image has been removed under the retention policy. A new upload is required for another image review.'}, status=400)
 
         if document.document_type == 'profile_photo' and action == 'reject' and (not isinstance(reason, str) or not reason.strip()):
             return Response({'error': 'Please explain why the photo needs to be retaken.'}, status=400)

@@ -32,6 +32,7 @@ def create_uploaded_document(user, image_file, document_data):
     # analysis, reviewer metadata, retries, or ownership of a running attempt.
     reset_fields = {
         'document_url': public_id,
+        'media_purged_at': None,
         'verification_status': 'Pending',
         'verifyBy': None,
         'rejection_reason': None,
@@ -59,6 +60,8 @@ def create_uploaded_document(user, image_file, document_data):
         if existing and not document_can_be_replaced(existing):
             raise DocumentAlreadySubmitted()
         if existing and not document_is_expired(existing):
+            from .media_retention import retire_media
+            retire_media(existing, 'replaced')
             for key, value in {**document_data, **reset_fields}.items():
                 setattr(existing, key, value)
             existing.created_at = timezone.now()

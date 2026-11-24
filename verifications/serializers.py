@@ -39,6 +39,8 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         representation = super().to_representation(instance)
         public_id = instance.document_url
+        if not public_id:
+            representation['document_url'] = None
 
         if public_id:
             if public_id.startswith('http://') or public_id.startswith('https://'):
@@ -136,6 +138,12 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         stored = obj.ocr_extracted_data or {}
         normalized = normalize_document_names(stored, obj.ocr_raw_text)
         flags = list(data['ocrDiscrepancies'] or [])
+        if not obj.media_purged_at:
+            from django.utils import timezone
+            from .services.media_retention import eligibility
+            if eligibility(obj, timezone.now())[1]:
+                flags.append({'field': 'review_overdue', 'severity': 'high',
+                              'message': 'This document has been pending for 30 days. Please complete the review before the 60-day image retention deadline.'})
         if normalized != stored:
             name_fields = (*NAME_FIELDS, 'full_name', 'name')
             data['ocrExtractedData'].update({field: normalized[field] for field in name_fields if field in normalized})
@@ -145,7 +153,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
             data['ocrMatchScore'] = score
 
         raw_text = obj.ocr_raw_text
-        if raw_text is None and obj.ocr_processed_at:
+        if raw_text is None and obj.ocr_processed_at and not obj.media_purged_at:
             raw_text = ''
         evidence = {**normalized, 'document_number': obj.document_number} if obj.document_number else normalized
         warning = missing_identity_warning(evidence, obj.document_type, raw_text)

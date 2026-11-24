@@ -16,6 +16,8 @@ def check_photo_upload(user, document=None):
     if user.account_type not in ('Homeowner', 'Kasambahay'):
         return
     document = document or current_profile_photo(user)
+    if document and document.media_purged_at:
+        return
     if (document and document.verification_status != 'Rejected') or (not document and user.profile_link):
         raise PermissionDenied('Your photo is saved. You can retake it only if a reviewer asks you to.')
 
@@ -29,11 +31,15 @@ def save_photo_submission(user, public_id):
         check_photo_upload(locked_user, document)
         if document:
             previous = document.verification_status
+            from .media_retention import retire_media
+            if document.document_url != public_id:
+                retire_media(document, 'replaced')
             document.document_url = public_id
+            document.media_purged_at = None
             document.verification_status = 'Pending'
             document.rejection_reason = None
             document.verifyBy = None
-            document.save(update_fields=['document_url', 'verification_status', 'rejection_reason', 'verifyBy'])
+            document.save(update_fields=['document_url', 'media_purged_at', 'verification_status', 'rejection_reason', 'verifyBy'])
             log = record_audit_log(document=document, action='UPLOADED', actor=locked_user,
                              target_user=locked_user, previous_status=previous, new_status='Pending',
                              reason='New face photo submitted for review.')

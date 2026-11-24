@@ -38,6 +38,7 @@ class AdminDocumentDetailSerializer(serializers.ModelSerializer):
             'verifyBy_email',
             'user_profile',
             'created_at',
+            'media_purged_at',
         ]
 
     def get_document_image_url(self, instance):
@@ -80,6 +81,7 @@ class UserDocumentStatusSerializer(serializers.ModelSerializer):
             'ocr_retry_count',
             'rejection_reason',
             'created_at',
+            'media_purged_at',
         ]
 
     def get_document_image_url(self, instance):

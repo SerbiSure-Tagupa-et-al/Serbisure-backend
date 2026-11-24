@@ -230,6 +230,10 @@ SPECTACULAR_SETTINGS = {
     'SERVE_INCLUDE_SCHEMA': False,
 }
 
+VERIFICATION_MEDIA_RETENTION_START_AT = os.getenv(
+    'VERIFICATION_MEDIA_RETENTION_START_AT', '2026-11-25T00:00:00+08:00',
+)
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

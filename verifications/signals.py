@@ -1,5 +1,6 @@
 import logging
-from django.db.models.signals import post_save, post_delete
+from django.db.models.signals import pre_save, pre_delete, post_save, post_delete
+from django.conf import settings
 from django.dispatch import receiver
 from django.utils import timezone
 from datetime import timedelta
@@ -7,6 +8,19 @@ from verifications.models import tbl_documents, tbl_audit_logs
 from verifications.services.audit_logger import record_audit_log
 
 logger = logging.getLogger(__name__)
+
+
+@receiver(pre_save, sender=settings.AUTH_USER_MODEL)
+def retention_account_closed(sender, instance, using, **kwargs):
+    if instance.pk and not instance.is_active and sender.objects.using(using).filter(pk=instance.pk, is_active=True).exists():
+        log = record_audit_log(target_user=instance, action='UPDATED', previous_status='Active', new_status='Inactive',
+            reason='Account closed; raw media retention period started.', metadata={'reason_code': 'retention_account_closed'})
+        if log is None:
+            raise RuntimeError('Could not record the account closure retention timestamp.')
+        if instance.profile_link and not instance.documents.filter(document_url=instance.profile_link).exists():
+            tbl_audit_logs.objects.using(using).create(action='UPDATED', actor_name='System / Automated', actor_role='System',
+                document_type='profile_photo', reason='Closed account avatar queued for retention cleanup.',
+                metadata={'reason_code': 'retention_media_retired', 'public_id': instance.profile_link, 'retired_reason': 'closed_account'})
 
 
 @receiver(post_save, sender=tbl_documents)
@@ -27,6 +41,13 @@ def document_post_save_audit(sender, instance, created, **kwargs):
             )
         except Exception as e:
             logger.error(f"[Signal] Error in document_post_save_audit: {e}", exc_info=True)
+
+
+@receiver(pre_delete, sender=tbl_documents)
+def retain_deleted_media_reference(sender, instance, **kwargs):
+    # Capture decision dates before deletion clears the audit log's document FK.
+    from .services.media_retention import retire_media
+    retire_media(instance, 'deleted')
 
 
 @receiver(post_delete, sender=tbl_documents)

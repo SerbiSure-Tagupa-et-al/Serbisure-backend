@@ -40,6 +40,8 @@ def _needs_analysis(document):
 
 def document_needs_retry(document, *, now=None, max_retries=MAX_AUTOMATIC_RETRIES):
     """A status read may recover failed work, but must not duplicate active work."""
+    if getattr(document, 'media_purged_at', None) or not document.document_url:
+        return False
     now = now or timezone.now()
     last_attempt = document.ocr_last_attempt_at or document.created_at
     active = document.ocr_processing_token and last_attempt > now - PROCESSING_LEASE
@@ -58,7 +60,7 @@ def _claim_document(document_id, *, retry=False, force=False, expected_url=None,
     # Only this short claim uses a row lock. External API calls run after commit.
     with transaction.atomic():
         document = tbl_documents.objects.select_for_update().filter(pk=document_id).first()
-        if document is None or document.document_type == 'profile_photo' or (expected_url is not None and document.document_url != expected_url):
+        if document is None or document.media_purged_at or not document.document_url or document.document_type == 'profile_photo' or (expected_url is not None and document.document_url != expected_url):
             return None
         now = timezone.now()
         if (document.ocr_processing_token and document.ocr_last_attempt_at

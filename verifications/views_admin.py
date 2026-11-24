@@ -128,6 +128,8 @@ class AdminDocumentActionView(APIView):
             tbl_documents.objects.select_related('user_profile'),
             document_id=document_id
         )
+        if document.media_purged_at or not document.document_url:
+            return Response({'error': 'The original image has been removed under the retention policy. Please request a new upload before another image review.'}, status=400)
 
         serializer = AdminDocumentActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -226,6 +228,8 @@ class AdminReprocessDocumentView(APIView):
 
     def post(self, request, document_id):
         document = get_object_or_404(tbl_documents, document_id=document_id)
+        if document.media_purged_at or not document.document_url:
+            return Response({'error': 'The original image has been removed under the retention policy. Please upload a new image before OCR reprocessing.'}, status=400)
         if document.document_type == 'profile_photo':
             return Response({'error': 'Profile photos are reviewed by an official, without OCR.'}, status=400)
         record_audit_log(

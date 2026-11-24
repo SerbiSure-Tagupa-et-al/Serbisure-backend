@@ -64,9 +64,11 @@ class tbl_documents(models.Model):
 
     document_url = models.CharField(
         max_length=255,
-        blank=False,
+        blank=True,
+        default='',
         null=False
     )
+    media_purged_at = models.DateTimeField(null=True, blank=True)
 
     date_issued = models.DateField(
         blank=True,
