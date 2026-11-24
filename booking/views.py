@@ -26,7 +26,7 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from notifications.services import send_in_app_notification
 from .wage_policy import get_minimum_wage_info, validate_rate
-from .services import accept_engagement, create_proposal
+from .services import accept_engagement, assert_no_pending_review, create_proposal, get_pending_mandatory_review
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -59,6 +59,7 @@ class BookingView(generics.CreateAPIView):
                 "detail": "Account verification is required before posting. Please verify your account to keep our community safe and trusted.",
                 "verification_status": request.user.verification_status
             }, status=status.HTTP_403_FORBIDDEN)
+        assert_no_pending_review(request.user)
 
         idempotency_key = request.headers.get('Idempotency-Key')
         if not idempotency_key or not check_valid_uuid(idempotency_key):
@@ -409,7 +410,10 @@ class BookingPenaltyStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(penalty_status(request.user))
+        return Response({
+            **penalty_status(request.user),
+            'pending_review': get_pending_mandatory_review(request.user),
+        })
 
 
 class MyBookingsView(generics.ListAPIView):

@@ -47,6 +47,58 @@ def pair_booking_count(first_id, second_id, at=None):
     ).values('booking_id').distinct().count()
 
 
+def _participant_display_name(user):
+    full = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+    return full or getattr(user, 'username', '') or 'Service Partner'
+
+
+def get_pending_mandatory_review(user):
+    """Return the most recent reviewable Completed booking still missing a review from user."""
+    if not user or not getattr(user, 'is_authenticated', False):
+        return None
+    if getattr(user, 'account_type', None) not in ('Homeowner', 'Kasambahay'):
+        return None
+    from reviews.models import tbl_review
+    reviewed_ids = tbl_review.objects.filter(reviewer_id=user).values_list('booking_id_id', flat=True)
+    completed = (
+        tbl_booking.objects.filter(booking_status='Completed')
+        .filter(Q(poster_id=user) | Q(assignments__accepter_id=user))
+        .exclude(pk__in=reviewed_ids)
+        .select_related('poster_id')
+        .prefetch_related('assignments__accepter_id')
+        .distinct()
+        .order_by('-completed_at', '-createdAt')
+    )
+    for booking in completed:
+        assignment = next(iter(booking.assignments.all()), None)
+        if not assignment or not assignment.accepter_id_id:
+            continue
+        if booking.poster_id_id == assignment.accepter_id_id:
+            continue
+        reviewee = assignment.accepter_id if booking.poster_id_id == user.pk else booking.poster_id
+        if not reviewee or reviewee.pk == user.pk:
+            continue
+        return {
+            'booking_id': str(booking.pk),
+            'reviewee_name': _participant_display_name(reviewee),
+            'service_category': booking.service_category if isinstance(booking.service_category, list) else [],
+        }
+    return None
+
+
+def assert_no_pending_review(user):
+    pending = get_pending_mandatory_review(user)
+    if pending:
+        raise PermissionDenied({
+            'code': 'pending_mandatory_review',
+            'detail': (
+                f"Please submit your review for your completed booking with {pending['reviewee_name']} "
+                "before creating, applying for, or accepting a new booking."
+            ),
+            'pending_review': pending,
+        })
+
+
 def ensure_eligible_pair(poster, accepter):
     if poster.pk == accepter.pk:
         raise ValidationError({'error': 'You cannot accept or propose on your own booking.'})
@@ -113,6 +165,7 @@ def accept_engagement(booking_id, actor, proposal_id=None):
     booking = get_object_or_404(tbl_booking.objects.select_for_update(), pk=booking_id)
     poster, accepter = people[booking.poster_id_id], people[accepter_id]
     ensure_eligible_pair(poster, accepter)
+    assert_no_pending_review(people[actor.pk])
     if booking.recipient_id_id and booking.recipient_id_id != accepter.pk:
         raise PermissionDenied('This private offer is addressed to another participant.')
     ensure_open(booking)
@@ -142,6 +195,7 @@ def create_proposal(booking_id, actor, amount, period, message, *, apply_at_post
     message = inspect_outgoing(people[actor.pk], people[preview.poster_id_id], message, channel='proposal')
     booking = get_object_or_404(tbl_booking.objects.select_for_update(), pk=booking_id)
     ensure_eligible_pair(people[booking.poster_id_id], people[actor.pk])
+    assert_no_pending_review(people[actor.pk])
     if booking.recipient_id_id and booking.recipient_id_id != actor.pk:
         raise PermissionDenied('This private offer is addressed to another participant.')
     if apply_at_posted_rate:

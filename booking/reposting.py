@@ -8,6 +8,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from accounts.penalties import assert_booking_unrestricted
 from .availability import post_status, schedule_expired
 from .models import tbl_booking
+from .services import assert_no_pending_review
 
 
 @transaction.atomic
@@ -16,6 +17,7 @@ def repost_public_post(post_id, actor, schedule, key):
     assert_booking_unrestricted(actor)
     if not actor.is_active or actor.verification_status != 'Verified':
         raise PermissionDenied('Please complete verification before publishing a post.')
+    assert_no_pending_review(actor)
     source = get_object_or_404(tbl_booking.objects.select_for_update(), pk=post_id,
                               poster_id=actor, recipient_id__isnull=True)
     digest = hashlib.sha256(json.dumps({'action': 'repost', 'post_id': str(post_id), 'schedule': schedule},
