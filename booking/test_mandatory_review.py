@@ -190,12 +190,26 @@ class MandatoryPostBookingReviewTests(TestCase):
 
     @patch('reviews.views.analyze_feedback', return_value={'label': 'Positive', 'scores': {'Positive': 0.99}})
     def test_submitting_review_unlocks_only_that_participant(self, _mock_sentiment):
-        # Owner submits review -> owner unlocked, worker remains locked
+        # Owner omitting would_recommend is blocked and stays locked
+        missing_rec = self._client_for(self.owner).post(
+            '/api/v1/reviews/create/',
+            {
+                'booking_id': str(self.completed.pk),
+                'rating': 5,
+                'unstructured_feedback': 'Very reliable and thorough cleaning service!',
+            },
+            format='json',
+            HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+        )
+        self.assertEqual(missing_rec.status_code, 400)
+
+        # Owner submits complete review with would_recommend -> owner unlocked, worker remains locked
         rev_res = self._client_for(self.owner).post(
             '/api/v1/reviews/create/',
             {
                 'booking_id': str(self.completed.pk),
                 'rating': 5,
+                'would_recommend': True,
                 'unstructured_feedback': 'Very reliable and thorough cleaning service!',
             },
             format='json',
@@ -216,13 +230,31 @@ class MandatoryPostBookingReviewTests(TestCase):
         self.assertEqual(worker_post_res.status_code, 403)
         self.assertEqual(worker_post_res.data['code'], 'pending_mandatory_review')
 
-        # Worker submits review -> worker unlocked too
+        # An incomplete worker review must not release the mandatory review lock.
+        incomplete_worker_review = self._client_for(self.worker).post(
+            '/api/v1/reviews/create/',
+            {'booking_id': str(self.completed.pk), 'rating': 5,
+             'unstructured_feedback': 'Kind homeowner and very clear instructions.'},
+            format='json', HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+        )
+        self.assertEqual(incomplete_worker_review.status_code, 400)
+        self.assertIn('would_recommend', incomplete_worker_review.data)
+        self.assertFalse(tbl_review.objects.filter(booking_id=self.completed, reviewer_id=self.worker).exists())
+        still_locked = self._client_for(self.worker).post(
+            '/api/v1/booking/post/', self._post_payload(), format='json',
+            HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+        )
+        self.assertEqual(still_locked.status_code, 403)
+        self.assertEqual(still_locked.data['code'], 'pending_mandatory_review')
+
+        # Worker submits the full review -> worker unlocked too.
         worker_rev_res = self._client_for(self.worker).post(
             '/api/v1/reviews/create/',
             {
                 'booking_id': str(self.completed.pk),
                 'rating': 5,
                 'unstructured_feedback': 'Kind homeowner and very clear instructions.',
+                'would_recommend': True,
             },
             format='json',
             HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),

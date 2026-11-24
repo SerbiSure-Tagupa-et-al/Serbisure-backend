@@ -65,6 +65,13 @@ class tbl_review(models.Model):
         null=False
     )
 
+    would_recommend = models.BooleanField(
+        null=True,
+        blank=True,
+        default=None,
+        help_text='Required for Homeowner reviews of Kasambahays; indicates verified employer referral.'
+    )
+
     createdAt = models.DateTimeField(
         auto_now_add=True
     )

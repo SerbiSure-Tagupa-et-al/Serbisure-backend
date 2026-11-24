@@ -128,6 +128,9 @@ def build(data, labels, today=None):
     stats = []
     if perf['completed_jobs']:
         stats.append(f"{perf['completed_jobs']} completed jobs")
+    if perf.get('recommended_count'):
+        rec = perf['recommended_count']
+        stats.append(f"Recommended by {rec} {'Homeowner' if rec == 1 else 'Homeowners'}")
     if perf['review_count']:
         stats.append(f"{perf['review_count']} reviews")
         if perf['average_rating'] is not None:
@@ -136,6 +139,17 @@ def build(data, labels, today=None):
             stats.append(f"{perf['positive_percentage']}% positive feedback")
     if stats:
         trust.append(' · '.join(stats))
+    verified_lines = []
+    for job in data.get('work_history') or []:
+        services = ', '.join(job.get('service_labels') or []) or 'Household Service'
+        term = 'Full-time' if job.get('booking_type') == 'long_term' else 'Part-time'
+        parts = [services, term]
+        if job.get('area'):
+            parts.append(job['area'])
+        if job.get('would_recommend'):
+            parts.append('Recommended by Homeowner')
+        verified_lines.append(' · '.join(parts))
+    section('Verified SerbiSure Work History', 'text', verified_lines)
     return {'name': clean(data['name']), 'services': ', '.join(label(value) for value in unique(d.get('service_categories'))),
             'location': clean(data.get('location')), 'phone': phone(data.get('contact_number')),
             'verified': status == 'Verified', 'facts': facts, 'sections': sections, 'trust': trust,

@@ -264,6 +264,7 @@ This document outlines the database schema, models, field types, and choices (en
 | `sentiment_analysis` | `JSONField` | Blank=True |
 | `submission_key` | `UUIDField` | Null=True, Blank=True |
 | `rating` | `IntegerField` | - |
+| `would_recommend` | `BooleanField` | Null=True, Blank=True |
 | `createdAt` | `DateTimeField` | Blank=True |
 
 ## Notifications App

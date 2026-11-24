@@ -9,10 +9,11 @@ class CreateReviewSerializer(serializers.ModelSerializer):
     nlp_sentiment = serializers.CharField(read_only=True)
     # min_length=10 prevents meaningless 1-character submissions
     unstructured_feedback = serializers.CharField(min_length=10, max_length=1000, allow_blank=False)
+    would_recommend = serializers.BooleanField(required=False, allow_null=True, default=None)
 
     class Meta:
         model = tbl_review
-        fields = ['booking_id', 'rating', 'unstructured_feedback', 'nlp_sentiment']
+        fields = ['booking_id', 'rating', 'unstructured_feedback', 'would_recommend', 'nlp_sentiment']
         # reviewer_id and reviewee_id are NOT listed here — they are injected via
         # serializer.save(reviewer_id=..., reviewee_id=...) in the view, which is
         # the standard DRF pattern for server-set fields.
@@ -63,6 +64,22 @@ class CreateReviewSerializer(serializers.ModelSerializer):
                 "detail": "You have already submitted a review for this booking."
             })
 
+        # 7. Both sides of a Homeowner/Kasambahay review must answer the referral question.
+        reviewer_role = getattr(user, 'account_type', None)
+        reviewee_role = getattr(reviewee, 'account_type', None)
+        if reviewer_role == 'Homeowner' and reviewee_role == 'Kasambahay':
+            if data.get('would_recommend') is None:
+                raise serializers.ValidationError({
+                    "would_recommend": "Please choose whether you would recommend this Kasambahay to other Homeowners."
+                })
+        elif reviewer_role == 'Kasambahay' and reviewee_role == 'Homeowner':
+            if data.get('would_recommend') is None:
+                raise serializers.ValidationError({
+                    "would_recommend": "Please choose whether you would recommend this Homeowner to other Kasambahays."
+                })
+        else:
+            data['would_recommend'] = None
+
         # Set derived participants directly in validated data
         data['reviewer_id'] = user
         data['reviewee_id'] = reviewee
@@ -99,6 +116,7 @@ class ReviewSerializer(serializers.ModelSerializer):
             'reviewee_account_type',
             'reviewee_profile_link',
             'rating',
+            'would_recommend',
             'unstructured_feedback',
             'nlp_sentiment',
             'sentiment_analysis',

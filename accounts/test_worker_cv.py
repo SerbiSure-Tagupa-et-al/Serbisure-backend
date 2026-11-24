@@ -198,3 +198,108 @@ class WorkerCvTests(APITestCase):
         image.seek(0)
         with patch('accounts.cv_service._photo', return_value=image):
             self.assertTrue(pdf_bytes(snapshot(self.worker)).startswith(b'%PDF-'))
+
+    def test_public_work_history_returns_verified_jobs_referrals_and_hides_street(self):
+        from datetime import timedelta
+        from decimal import Decimal
+        from django.utils import timezone
+        from booking.models import tbl_booking, tbl_booking_assignment
+        from reviews.models import tbl_review
+
+        now = timezone.now()
+        # 2 completed jobs with the same homeowner (counts as 1 repeat employer) + 1 pending job (excluded)
+        b1 = tbl_booking.objects.create(
+            poster_id=self.owner, booking_type='short_term', work_setup='stay_out',
+            booking_status='Completed', service_category=['Cleaning'],
+            start_time=now - timedelta(days=10), end_time=now - timedelta(days=9),
+            street='999 Secret St', barangay='Agusan', city='Cagayan de Oro',
+            province='Misamis Oriental', region='Region X', zip_code='9000',
+            rate_amount=Decimal('700.00'), rate_period='day',
+        )
+        tbl_booking_assignment.objects.create(booking_id=b1, accepter_id=self.worker)
+        tbl_review.objects.create(
+            booking_id=b1, reviewer_id=self.owner, reviewee_id=self.worker,
+            rating=5, would_recommend=True, unstructured_feedback='Very punctual and reliable!', nlp_sentiment='Positive',
+        )
+
+        b2 = tbl_booking.objects.create(
+            poster_id=self.worker, booking_type='long_term', work_setup='stay_in',
+            booking_status='Completed', service_category=['Cooking', 'Child_care'],
+            start_time=now - timedelta(days=40), end_time=now - timedelta(days=5),
+            street='888 Private Rd', barangay='Carmen', city='Cagayan de Oro',
+            province='Misamis Oriental', region='Region X', zip_code='9000',
+            rate_amount=Decimal('7500.00'), rate_period='month',
+        )
+        tbl_booking_assignment.objects.create(booking_id=b2, accepter_id=self.owner)
+
+        # Neither participant's history may expose pending or cancelled bookings.
+        for status, category in [('Pending', 'Laundry'), ('Cancelled', 'Caregiver')]:
+            hidden = tbl_booking.objects.create(
+                poster_id=self.owner, booking_type='short_term', work_setup='stay_out',
+                booking_status=status, service_category=[category],
+                start_time=now + timedelta(days=2), end_time=now + timedelta(days=3),
+                street='777 Hidden Ln', floor_number='PRIVATE UNIT 77', barangay='Nazareth', city='Cagayan de Oro',
+                province='Misamis Oriental', region='Region X', zip_code='9000',
+                rate_amount=Decimal('650.00'), rate_period='day',
+            )
+            tbl_booking_assignment.objects.create(booking_id=hidden, accepter_id=self.worker)
+
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.get(reverse('public-worker-history', args=[self.worker.pk]))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['summary']['completed_jobs_count'], 2)
+        self.assertEqual(res.data['account_type'], 'Kasambahay')
+        self.assertTrue(all(job['partner_role'] == 'Homeowner' for job in res.data['jobs']))
+        self.assertEqual(res.data['summary']['recommended_count'], 1)
+        self.assertEqual(res.data['summary']['repeat_employers_count'], 1)
+        self.assertEqual(len(res.data['jobs']), 2)
+        serialized = str(res.data)
+        self.assertNotIn('999 Secret St', serialized)
+        self.assertNotIn('888 Private Rd', serialized)
+        self.assertNotIn('Laundry', serialized)
+        self.assertNotIn('Caregiver', serialized)
+        self.assertIn('Agusan, Cagayan de Oro', serialized)
+        self.assertIn('Carmen, Cagayan de Oro', serialized)
+
+        cv_res = self.client.get(self.cv)
+        self.assertEqual(cv_res.status_code, 200)
+        self.assertEqual(cv_res.data['performance']['completed_jobs'], 2)
+        self.assertEqual(cv_res.data['performance']['recommended_count'], 1)
+        self.assertEqual(len(cv_res.data['work_history']), 2)
+
+        # Homeowners receive the same completed history with role-aware partner metadata.
+        tbl_review.objects.create(booking_id=b1, reviewer_id=self.worker, reviewee_id=self.owner,
+            rating=5, would_recommend=True, unstructured_feedback='Respectful and helpful homeowner.', nlp_sentiment='Positive')
+        tbl_review.objects.create(booking_id=b2, reviewer_id=self.worker, reviewee_id=self.owner,
+            rating=3, would_recommend=False, unstructured_feedback='The instructions could be clearer.', nlp_sentiment='Neutral')
+        self.client.force_authenticate(user=self.worker)
+        homeowner_history = self.client.get(reverse('public-worker-history', args=[self.owner.pk]))
+        self.assertEqual(homeowner_history.status_code, 200)
+        self.assertEqual(homeowner_history.data['summary'], {
+            'recommended_count': 1, 'completed_jobs_count': 2, 'repeat_employers_count': 1,
+        })
+        self.assertEqual(homeowner_history.data['account_type'], 'Homeowner')
+        self.assertEqual(len(homeowner_history.data['jobs']), 2)
+        for job in homeowner_history.data['jobs']:
+            self.assertEqual(job['partner_role'], 'Kasambahay')
+            self.assertEqual(job['employer_name'], f'{self.worker.first_name} {self.worker.last_name}')
+            self.assertNotIn('street', job)
+            self.assertNotIn('floor_number', job)
+            self.assertNotIn('floor_unit', job)
+            self.assertNotIn('email', job)
+            self.assertNotIn('contact_number', job)
+        first_job = next(job for job in homeowner_history.data['jobs'] if job['booking_id'] == str(b1.pk))
+        self.assertEqual(first_job['area'], 'Agusan, Cagayan de Oro')
+        self.assertIs(first_job['would_recommend'], True)
+        for secret in ('999 Secret St', '888 Private Rd', '777 Hidden Ln', 'PRIVATE UNIT 77', 'Laundry', 'Caregiver',
+                       self.worker.email, self.owner.email, self.worker.contact_number):
+            self.assertNotIn(secret, str(homeowner_history.data))
+
+    def test_desk_accounts_have_no_public_booking_history_or_referrals(self):
+        for role in ('Admin', 'Barangay'):
+            desk = tbl_user_profile.objects.create_user(username=f'history-{role}', email=f'history-{role}@test.com', account_type=role)
+            result = self.client.get(reverse('public-worker-history', args=[desk.pk]))
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(result.data['account_type'], role)
+            self.assertEqual(result.data['jobs'], [])
+            self.assertEqual(result.data['summary'], {'recommended_count': 0, 'completed_jobs_count': 0, 'repeat_employers_count': 0})

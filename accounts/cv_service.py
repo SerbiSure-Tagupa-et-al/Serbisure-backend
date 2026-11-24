@@ -20,9 +20,101 @@ LABELS = {'Child_care': 'Childcare', 'stay_in': 'Stay-in', 'stay_out': 'Stay-out
           'M': 'Mon', 'T': 'Tue', 'W': 'Wed', 'Th': 'Thu', 'F': 'Fri', 'S': 'Sat', 'Su': 'Sun'}
 
 
-def snapshot(user):
+def verified_work_history(user, limit=20):
+    """Return area-only completed booking history and referrals for either participant role."""
+    from collections import Counter
+    from django.db.models import Q
     from reviews.models import tbl_review
     from booking.models import tbl_booking, tbl_booking_assignment
+
+    assigned_booking_ids = list(
+        tbl_booking_assignment.objects.filter(
+            accepter_id=user,
+            booking_id__booking_status='Completed',
+        ).values_list('booking_id', flat=True)
+    )
+    completed_qs = (
+        tbl_booking.objects.filter(booking_status='Completed')
+        .filter(Q(poster_id=user) | Q(pk__in=assigned_booking_ids))
+        .select_related('poster_id')
+        .distinct()
+    )
+    bookings = list(completed_qs)
+    booking_pks = [b.pk for b in bookings]
+
+    assignments = {
+        a.booking_id_id: a
+        for a in tbl_booking_assignment.objects.filter(booking_id_id__in=booking_pks).select_related('accepter_id')
+    }
+    reviews_by_booking = {
+        r.booking_id_id: r
+        for r in tbl_review.objects.filter(reviewee_id=user, booking_id_id__in=booking_pks).select_related('reviewer_id')
+    }
+    recommended_count = tbl_review.objects.filter(reviewee_id=user, would_recommend=True).count()
+
+    def sort_key(b):
+        assignment = assignments.get(b.pk)
+        completed_dt = getattr(assignment, 'completed_at', None) if assignment else None
+        return completed_dt or b.end_time or b.start_time
+
+    bookings.sort(key=sort_key, reverse=True)
+
+    employer_counts = Counter()
+    items = []
+    for b in bookings:
+        assignment = assignments.get(b.pk)
+        employer = assignment.accepter_id if (b.poster_id_id == user.pk and assignment) else b.poster_id
+        if employer and employer.pk != user.pk:
+            employer_counts[str(employer.pk)] += 1
+        else:
+            employer = None
+
+        if len(items) >= limit:
+            continue
+
+        completed_dt = getattr(assignment, 'completed_at', None) if assignment else None
+        review = reviews_by_booking.get(b.pk)
+        area = ', '.join(part.strip() for part in [b.barangay or '', b.city or ''] if part and part.strip())
+        employer_name = (
+            ' '.join(p for p in [employer.first_name, employer.last_name] if p).strip() or employer.username
+            if employer else ('Kasambahay' if user.account_type == 'Homeowner' else 'Homeowner')
+        )
+        categories = list(b.service_category or [])
+        items.append({
+            'booking_id': str(b.pk),
+            'service_category': categories,
+            'service_labels': [LABELS.get(c, c.replace('_', ' ')) for c in categories],
+            'booking_type': b.booking_type,
+            'work_setup': b.work_setup,
+            'area': area,
+            'start_date': b.start_time.date().isoformat() if b.start_time else None,
+            'end_date': b.end_time.date().isoformat() if b.end_time else None,
+            'completed_at': (completed_dt or b.end_time or b.start_time).isoformat() if (completed_dt or b.end_time or b.start_time) else None,
+            'employer_name': employer_name,
+            'partner_role': employer.account_type if employer else ('Kasambahay' if user.account_type == 'Homeowner' else 'Homeowner'),
+            'employer_verified': bool(employer and employer.verification_status == 'Verified'),
+            'employer_avatar': get_signed_cloudinary_url(employer.profile_link, as_avatar=True) if employer else None,
+            'rating': review.rating if review else None,
+            'would_recommend': review.would_recommend if review else None,
+            'nlp_sentiment': review.nlp_sentiment if review else None,
+            'feedback': review.unstructured_feedback if review else None,
+        })
+
+    repeat_employers_count = sum(1 for count in employer_counts.values() if count >= 2)
+    return {
+        'user_id': str(user.pk),
+        'account_type': user.account_type,
+        'summary': {
+            'completed_jobs_count': len(bookings),
+            'recommended_count': recommended_count,
+            'repeat_employers_count': repeat_employers_count,
+        },
+        'jobs': items,
+    }
+
+
+def snapshot(user):
+    from reviews.models import tbl_review
     worker = tbl_worker_profile.objects.filter(user=user).first()
     details = dict(WorkerProfileSerializer(worker or tbl_worker_profile(user=user)).data)
     if not details['service_categories']:
@@ -38,8 +130,7 @@ def snapshot(user):
         details.pop('number_of_children')
     reviews = tbl_review.objects.filter(reviewee_id=user)
     count = reviews.count()
-    jobs = set(tbl_booking.objects.filter(poster_id=user, booking_status='Completed').values_list('pk', flat=True))
-    jobs.update(tbl_booking_assignment.objects.filter(accepter_id=user, booking_id__booking_status='Completed').values_list('booking_id', flat=True))
+    history = verified_work_history(user, limit=5)
     data = {
         'user_id': str(user.pk), 'name': ' '.join(value for value in [user.first_name, user.middle_name, user.last_name] if value).strip() or user.username,
         'location': ', '.join(value for value in [user.city, user.province] if value),
@@ -47,9 +138,12 @@ def snapshot(user):
         'verification_status': user.verification_status, 'contact_number': user.contact_number if contact_shared else None,
         'about': '' if user.user_about == 'No Bio' else user.user_about,
         'details': details, 'self_reported': True,
-        'performance': {'completed_jobs': len(jobs), 'review_count': count,
+        'performance': {'completed_jobs': history['summary']['completed_jobs_count'], 'review_count': count,
+                        'recommended_count': history['summary']['recommended_count'],
+                        'repeat_employers_count': history['summary']['repeat_employers_count'],
                         'average_rating': round(reviews.aggregate(value=Avg('rating'))['value'], 1) if count else None,
                         'positive_percentage': round(reviews.filter(nlp_sentiment='Positive').count() * 100 / count) if count else None},
+        'work_history': history['jobs'],
         'generated_at': timezone.now().isoformat(),
         'notice': 'Experience, skills, family information and preferences are self-reported. Preferences are not agreed booking or contract terms.',
     }

@@ -63,9 +63,11 @@ class CreateReviewView(generics.CreateAPIView):
         review = tbl_review.objects.filter(reviewer_id=request.user, submission_key=key).first()
         if review is None:
             return None
+        req_rec = request.data.get('would_recommend')
         if (str(review.booking_id_id) != str(request.data.get('booking_id'))
                 or str(review.rating) != str(request.data.get('rating'))
-                or review.unstructured_feedback != str(request.data.get('unstructured_feedback', '')).strip()):
+                or review.unstructured_feedback != str(request.data.get('unstructured_feedback', '')).strip()
+                or (req_rec is not None and review.would_recommend is not None and bool(req_rec) != bool(review.would_recommend))):
             return Response({'detail': 'This submission key was already used for a different review.'}, status=400)
         return Response({'message': 'Review submitted successfully.', 'data': ReviewSerializer(review).data}, status=200)
 
