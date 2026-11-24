@@ -32,7 +32,7 @@ class ProfilePhotoTests(APITestCase):
             document_url='test/profile-photo', verification_status=status)
 
     def credentials(self, user):
-        kinds = ('national_id_front', 'national_id_back') if user.account_type == 'Homeowner' else ('nbi_clearance', 'police_clearance')
+        kinds = ('national_id_front', 'national_id_back') if user.account_type == 'Homeowner' else ('nbi_clearance', 'police_clearance', 'tesda_nc2')
         for kind in kinds:
             Document.objects.create(user_profile=user, document_type=kind, document_url=f'test/{kind}', verification_status='Verified')
 
@@ -62,7 +62,7 @@ class ProfilePhotoTests(APITestCase):
         with self.assertRaises(PermissionDenied): ensure_eligible_pair(self.owner, self.worker)
         self.client.force_authenticate(self.worker)
         self.assertEqual(self.client.post('/api/v1/booking/post/', {}, format='json').status_code, 403)
-        self.assertTrue(self.worker.documents.exclude(document_type='profile_photo').filter(verification_status='Verified').count() == 2)
+        self.assertEqual(self.worker.documents.exclude(document_type='profile_photo').filter(verification_status='Verified').count(), 3)
 
     def test_review_requires_reason_respects_jurisdiction_and_logs_and_notifies(self):
         photo = self.photo()

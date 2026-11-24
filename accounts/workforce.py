@@ -7,7 +7,7 @@ from django.utils import timezone
 
 PH_TIME = ZoneInfo('Asia/Manila')
 REQUIRED_DOCUMENTS = {
-    'Kasambahay': ('nbi_clearance', 'police_clearance', 'profile_photo'),
+    'Kasambahay': ('nbi_clearance', 'police_clearance', 'tesda_nc2', 'profile_photo'),
     'Homeowner': ('national_id_front', 'national_id_back', 'profile_photo'),
 }
 SERVICES = ('Cleaning', 'Cooking', 'Child_care', 'Caregiver', 'Laundry', 'All-around')

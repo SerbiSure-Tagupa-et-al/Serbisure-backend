@@ -239,6 +239,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         mapping = {
             'nbi_clearance': 'NBI CLEARANCE',
             'police_clearance': 'Police Clearance',
+            'tesda_nc2': 'TESDA NC II',
             'national_id_front': 'National ID (Front)',
             'national_id_back': 'National ID (Back)',
         }
@@ -251,6 +252,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         val = (
             extracted.get('clearance_number') or
             extracted.get('philsys_number') or
+            extracted.get('certificate_number') or
             extracted.get('document_number')
         )
         if val:
@@ -363,6 +365,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
             mapping = {
                 'nbi_clearance': 'NBI CLEARANCE',
                 'police_clearance': 'Police Clearance',
+                'tesda_nc2': 'TESDA NC II',
                 'national_id_front': 'National ID (Front)',
                 'national_id_back': 'National ID (Back)',
             }
@@ -379,6 +382,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         val = (
             extracted.get('clearance_number') or
             extracted.get('philsys_number') or
+            extracted.get('certificate_number') or
             extracted.get('document_number')
         )
         return val or "Not Detected"

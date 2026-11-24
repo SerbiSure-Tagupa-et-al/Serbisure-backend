@@ -131,6 +131,11 @@ class CustomUserManager(BaseUserManager):
                     document_type='police_clearance',
                     defaults={'document_url': 'seed_police', 'verification_status': 'Verified'}
                 )
+                tbl_documents.objects.get_or_create(
+                    user_profile=user,
+                    document_type='tesda_nc2',
+                    defaults={'document_url': 'seed_tesda_nc2', 'verification_status': 'Verified'}
+                )
         return user
 
     
@@ -316,8 +321,9 @@ class tbl_user_profile(AbstractUser):
         """
         Dynamically derived verification status based on submitted documents in tbl_documents.
         Eliminates denormalization and database desynchronization.
-        - Homeowner: Verified when BOTH 'national_id_front' and 'national_id_back' are Verified.
-        - Kasambahay: Verified when BOTH 'nbi_clearance' and 'police_clearance' are Verified.
+        - Homeowner: Verified when National ID front, back, and profile photo are Verified.
+        - Kasambahay: Verified when NBI, Police, TESDA NC II / Skill Certification,
+          and profile photo are all Verified.
         - Admin / Barangay: Automatically 'Verified'.
         - Only the latest required submissions count; expired credentials are not Verified.
         - Expired eligibility maps to Unverified for mobile API compatibility.

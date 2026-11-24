@@ -50,7 +50,7 @@ class AsyncUploadTests(APITestCase):
 
     def test_both_roles_get_a_saved_pending_document_without_waiting_for_analysis(self):
         for role, kinds in [('Homeowner', ['national_id_front', 'national_id_back']),
-                            ('Kasambahay', ['nbi_clearance', 'police_clearance'])]:
+                            ('Kasambahay', ['nbi_clearance', 'police_clearance', 'tesda_nc2'])]:
             self.user.account_type = role
             self.user.save(update_fields=['account_type'])
             for kind in kinds:
@@ -64,8 +64,8 @@ class AsyncUploadTests(APITestCase):
                 self.assertEqual(document.document_url, 'new-image')
                 self.assertIsNone(document.ocr_processed_at)
                 self.assertIsNotNone(document.ocr_processing_token)
-        self.assertEqual(self.cloud.call_count, 4)
-        self.assertEqual(self.thread.return_value.start.call_count, 4)
+        self.assertEqual(self.cloud.call_count, 5)
+        self.assertEqual(self.thread.return_value.start.call_count, 5)
         self.legacy.assert_not_called()
         self.fetch.assert_not_called()
 

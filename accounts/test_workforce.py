@@ -21,6 +21,7 @@ class WorkforceTests(APITestCase):
             worker = self.user('Kasambahay', 'Pagatpat', is_on_job=True)
             Document.objects.create(user_profile=worker, document_type='profile_photo', document_url='test/face', verification_status='Verified')
             Document.objects.create(user_profile=worker, document_type='nbi_clearance', document_url='nbi', verification_status='Verified')
+            Document.objects.create(user_profile=worker, document_type='tesda_nc2', document_url='tesda', verification_status='Verified')
             if status != 'Unverified':
                 Document.objects.create(user_profile=worker, document_type='police_clearance', document_url='police', verification_status=status)
             expected = 1 if status == 'Verified' else 0
@@ -34,7 +35,7 @@ class WorkforceTests(APITestCase):
         entries = History.objects.filter(worker=worker)
         self.assertEqual(entries.count(), 1)
         self.assertFalse(entries.get().status)
-        for kind in ('nbi_clearance', 'police_clearance', 'profile_photo'):
+        for kind in ('nbi_clearance', 'police_clearance', 'tesda_nc2', 'profile_photo'):
             Document.objects.create(user_profile=worker, document_type=kind, document_url='clearance', verification_status='Verified')
         self.assertEqual(entries.count(), 2)
         self.assertTrue(entries.latest('changed_at').is_verified)

@@ -44,6 +44,8 @@ class ClearanceExpiryTests(APITestCase):
                                         account_type=role, barangay=barangay)
         if role in ('Kasambahay', 'Homeowner'):
             Document.objects.create(user_profile=user, document_type='profile_photo', document_url='test/face', verification_status='Verified')
+        if role == 'Kasambahay':
+            self.document(user, 'tesda_nc2', 90)
         return user
 
     def document(self, user, kind, days, status='Verified'):

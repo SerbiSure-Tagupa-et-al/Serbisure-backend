@@ -25,9 +25,9 @@ class DocumentUploadView(generics.CreateAPIView):
         user = request.user
         doc_type = request.data.get('document_type')
 
-        if user.account_type == 'Kasambahay' and doc_type not in ['nbi_clearance', 'police_clearance']:
+        if user.account_type == 'Kasambahay' and doc_type not in ['nbi_clearance', 'police_clearance', 'tesda_nc2']:
             return Response(
-                {"error": "Kasambahay can only upload NBI or Police Clearances"},
+                {"error": "Kasambahay can only upload NBI Clearance, Police Clearance, or TESDA NC II"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         

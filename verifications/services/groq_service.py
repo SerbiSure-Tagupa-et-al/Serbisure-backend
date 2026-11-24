@@ -14,7 +14,32 @@ NAME_INSTRUCTIONS = (
     "If only an unlabeled full name is visible and the parts are uncertain, return full_name and leave the parts null."
 )
 
+TESDA_NAME_AND_FIELD_INSTRUCTIONS = (
+    'Extract the certificate holder name directly below "is awarded to", never the bottom signatory '
+    'or Director General (for example SEC. DANILO P. CRUZ, CSEE). '
+    'The holder is printed as one complete name: populate full_name AND split the Philippine name parts. '
+    'For MARIA CLARA S. DELA CRUZ, return full_name MARIA CLARA S. DELA CRUZ, '
+    'first_name MARIA CLARA, middle_name S, and last_name DELA CRUZ. '
+    'Keep all given name words before the middle initial/name as first_name. '
+    'Return the middle initial/name without its trailing period, or null if absent. '
+    'Keep compound surnames together: DELA CRUZ, DE LA CRUZ, DE LOS SANTOS, DE LEON, SAN JOSE, STA. MARIA. '
+    'Extract certificate_number from Certificate No:, never ULI: or CLN-NQ- identifiers. '
+    'Extract qualification_title after NATIONAL CERTIFICATE II in (for example HOUSEKEEPING, CAREGIVING, DOMESTIC WORK). '
+    'Extract issuing_body as TESDA / Technical Education and Skills Development Authority, or the equivalent issuing institution. '
+    'Extract date_issued from Issued on and valid_until from Valid until as YYYY-MM-DD, '
+    'including dates without spaces after commas: September 20,2018 becomes 2018-09-20 '
+    'and September 19,2023 becomes 2023-09-19. Return null if not printed. '
+    'TESDA NC II certificates do not print date_of_birth or address; do not infer them.'
+)
+
 DOCUMENT_SCHEMAS = {
+    "tesda_nc2": {
+        "description": "Philippine TESDA National Certificate II (NC II) or Equivalent Skill Certification",
+        "fields": [
+            "full_name", "first_name", "middle_name", "last_name",
+            "certificate_number", "qualification_title", "issuing_body", "date_issued", "valid_until",
+        ],
+    },
     "nbi_clearance": {
         "description": "Philippine NBI Clearance",
         "fields": [
@@ -80,6 +105,7 @@ def build_system_prompt(document_type: str) -> str:
     schema = DOCUMENT_SCHEMAS.get(document_type, {})
     fields_list = ", ".join(schema.get("fields", ["full_name", "date_issued", "valid_until"]))
     doc_name = schema.get("description", document_type)
+    name_instructions = TESDA_NAME_AND_FIELD_INSTRUCTIONS if document_type == "tesda_nc2" else NAME_INSTRUCTIONS
 
     return (
         f"You are a specialized document data extraction AI for the Philippines SerbiSure platform. "
@@ -89,7 +115,7 @@ def build_system_prompt(document_type: str) -> str:
         "1. Return ONLY a single valid JSON object containing the specified keys.\n"
         "2. All dates MUST be in YYYY-MM-DD format (convert from English words or MM/DD/YYYY if necessary). If unavailable or unreadable, return null.\n"
         "3. If any field cannot be found or is blurry, set its value to null. Do not invent or guess.\n"
-        f"4. {NAME_INSTRUCTIONS}"
+        f"4. {name_instructions}"
     )
 
 
@@ -151,12 +177,13 @@ def extract_from_image_vision(image_bytes: bytes, document_type: str) -> tuple[s
     b64_data = base64.b64encode(image_bytes).decode("utf-8")
     schema = DOCUMENT_SCHEMAS.get(document_type, {})
     fields_list = ", ".join(schema.get("fields", ["full_name", "date_issued", "valid_until"]))
+    name_instructions = TESDA_NAME_AND_FIELD_INSTRUCTIONS if document_type == "tesda_nc2" else NAME_INSTRUCTIONS
 
     prompt = (
         f"You are verifying a Philippine document of type '{document_type}'.\n"
         "First, read all visible printed text on this document verbatim.\n"
         f"Second, extract the structured fields: {fields_list}.\n\n"
-        f"{NAME_INSTRUCTIONS}\n\n"
+        f"{name_instructions}\n\n"
         "Return a JSON object with exactly two keys:\n"
         "1. \"raw_text\": A string with all readable text transcribed from the image.\n"
         "2. \"extracted_data\": A JSON dictionary with the extracted fields (dates in YYYY-MM-DD, null if missing)."

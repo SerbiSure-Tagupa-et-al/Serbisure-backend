@@ -1,7 +1,7 @@
 """Keep reviewer-corrected document fields consistent across OCR and display."""
 CORRECTIONS_KEY = '_reviewer_corrections'
 NAME_FIELDS = ('first_name', 'middle_name', 'last_name')
-NUMBER_KEYS = ('clearance_number', 'philsys_number', 'document_number', 'id_number')
+NUMBER_KEYS = ('clearance_number', 'philsys_number', 'certificate_number', 'document_number', 'id_number')
 
 
 def merge_document_fields(extracted, corrections, document_type):
@@ -12,6 +12,8 @@ def merge_document_fields(extracted, corrections, document_type):
         result['full_name'] = ' '.join(result['full_name'].split()) or None
     if 'document_number' in corrections:
         preferred = 'philsys_number' if document_type.startswith('national_id') else 'clearance_number'
+        if document_type == 'tesda_nc2':
+            preferred = 'certificate_number'
         for key in set(NUMBER_KEYS).intersection(result) | {preferred, 'document_number'}:
             result[key] = corrections['document_number']
     return result

@@ -138,6 +138,7 @@ def _process_claimed_document(document):
         'ocr_processed_at': timezone.now(),
         'document_number': (
             extracted_data.get('clearance_number') or extracted_data.get('philsys_number')
+            or extracted_data.get('certificate_number')
             or extracted_data.get('document_number') or extracted_data.get('id_number')
         ),
     }

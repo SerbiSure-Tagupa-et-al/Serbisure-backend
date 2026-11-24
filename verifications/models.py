@@ -21,6 +21,7 @@ class tbl_documents(models.Model):
     DOCUMENT_CHOICES = (
         ('nbi_clearance', 'NBI Clearance'),
         ('police_clearance', 'Police Clearance'),
+        ('tesda_nc2', 'TESDA NC II / Skill Certification'),
         ('national_id_front', 'National ID (Front)'),
         ('national_id_back', 'National ID (Back)'),
         ('profile_photo', 'Profile Photo'),
@@ -154,7 +155,7 @@ class tbl_documents(models.Model):
         constraints = [
 
             CheckConstraint(
-                condition=Q(document_type__in=['nbi_clearance', 'police_clearance', 'national_id_front', 'national_id_back', 'profile_photo']),
+                condition=Q(document_type__in=['nbi_clearance', 'police_clearance', 'tesda_nc2', 'national_id_front', 'national_id_back', 'profile_photo']),
                 name='valid_document_type_enum'
             ),
 
