@@ -5,6 +5,7 @@ from rest_framework.exceptions import APIException
 
 from verifications.models import tbl_documents
 from verifications.services import document_processor
+from verifications.services.document_screening import document_has_stored_blocking_flag
 from accounts.workforce import document_is_expired
 
 
@@ -16,7 +17,10 @@ class DocumentAlreadySubmitted(APIException):
 def document_can_be_replaced(document):
     if document.document_type == 'profile_photo':
         return document.verification_status == 'Rejected'
-    # Pending submissions stay locked while officials review them.
+    # Clean Pending submissions stay locked while officials review them.
+    # Flagged Pending submissions (Option B: wrong/blurry/expired/suspicious) may be replaced right away.
+    if document.verification_status == 'Pending' and document_has_stored_blocking_flag(document):
+        return True
     return document.verification_status in ('Unverified', 'Rejected') or (
         document.verification_status == 'Verified' and document_is_expired(document)
     )
@@ -32,6 +36,7 @@ def create_uploaded_document(user, image_file, document_data):
     # analysis, reviewer metadata, retries, or ownership of a running attempt.
     reset_fields = {
         'document_url': public_id,
+        'media_purged_at': None,
         'verification_status': 'Pending',
         'verifyBy': None,
         'rejection_reason': None,
@@ -59,6 +64,8 @@ def create_uploaded_document(user, image_file, document_data):
         if existing and not document_can_be_replaced(existing):
             raise DocumentAlreadySubmitted()
         if existing and not document_is_expired(existing):
+            from .media_retention import retire_media
+            retire_media(existing, 'replaced')
             for key, value in {**document_data, **reset_fields}.items():
                 setattr(existing, key, value)
             existing.created_at = timezone.now()

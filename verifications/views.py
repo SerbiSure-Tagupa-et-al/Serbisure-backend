@@ -25,9 +25,9 @@ class DocumentUploadView(generics.CreateAPIView):
         user = request.user
         doc_type = request.data.get('document_type')
 
-        if user.account_type == 'Kasambahay' and doc_type not in ['nbi_clearance', 'police_clearance']:
+        if user.account_type == 'Kasambahay' and doc_type not in ['nbi_clearance', 'police_clearance', 'tesda_nc2']:
             return Response(
-                {"error": "Kasambahay can only upload NBI or Police Clearances"},
+                {"error": "Kasambahay can only upload NBI Clearance, Police Clearance, or TESDA NC II"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -207,6 +207,8 @@ class AdminVerificationReviewView(generics.GenericAPIView):
 
         action = request.data.get('action', '').lower()
         reason = request.data.get('rejection_reason', '')
+        if document.media_purged_at or not document.document_url:
+            return Response({'error': 'The original image has been removed under the retention policy. A new upload is required for another image review.'}, status=400)
 
         if document.document_type == 'profile_photo' and action == 'reject' and (not isinstance(reason, str) or not reason.strip()):
             return Response({'error': 'Please explain why the photo needs to be retaken.'}, status=400)
@@ -228,6 +230,33 @@ class AdminVerificationReviewView(generics.GenericAPIView):
         prev_status = document.verification_status
 
         if action == 'approve':
+            from .services.document_screening import screening_for_document
+            screening = screening_for_document(document)
+            override_warning = bool(request.data.get('override_warning'))
+            override_reason = str(request.data.get('override_reason') or '').strip()
+            audit_reason = None
+            audit_metadata = None
+            if screening and screening.get('has_blocking_flag'):
+                if not override_warning or not override_reason:
+                    return Response(
+                        {
+                            'error': (
+                                'This document has an automated screening warning. '
+                                'Confirm manual override and enter a justification reason before approving.'
+                            ),
+                            'code': 'override_required',
+                            'blocking_reasons': screening.get('blocking_reasons', []),
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                audit_reason = f"Manual override: {override_reason}"
+                audit_metadata = {
+                    'override_warning': True,
+                    'override_reason': override_reason,
+                    'primary_issue': screening.get('primary_issue'),
+                    'blocking_reasons': screening.get('blocking_reasons', []),
+                }
+
             document.verification_status = 'Verified'
             document.rejection_reason = None
             if reviewer:
@@ -241,7 +270,8 @@ class AdminVerificationReviewView(generics.GenericAPIView):
                 target_user=user,
                 previous_status=prev_status,
                 new_status='Verified',
-                reason=None,
+                reason=audit_reason,
+                metadata=audit_metadata,
                 request=request
             )
 

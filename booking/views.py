@@ -26,12 +26,13 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from notifications.services import send_in_app_notification
 from .wage_policy import get_minimum_wage_info, validate_rate
-from .services import accept_engagement, create_proposal
+from .services import PH_TIME, accept_engagement, assert_no_pending_review, create_proposal, get_pending_mandatory_review
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from uuid import UUID
 from .availability import available_public_posts, with_post_state
+from .geo import compute_proximity, normalize_barangay, normalize_city, resolve_coordinates
 from .serializers import ApplicationPostSerializer, RepostScheduleSerializer
 from .reposting import repost_public_post
 import math 
@@ -59,6 +60,7 @@ class BookingView(generics.CreateAPIView):
                 "detail": "Account verification is required before posting. Please verify your account to keep our community safe and trusted.",
                 "verification_status": request.user.verification_status
             }, status=status.HTTP_403_FORBIDDEN)
+        assert_no_pending_review(request.user)
 
         idempotency_key = request.headers.get('Idempotency-Key')
         if not idempotency_key or not check_valid_uuid(idempotency_key):
@@ -225,10 +227,71 @@ class BookingFeedView(generics.ListAPIView):
                 Q(poster_id__last_name__icontains=kw)
             )
 
-        # 6. Sorting
+        # 6. Proximity scope filtering & sorting (optional; omitted scope stays 'all' for compatibility)
         queryset = queryset.order_by('-createdAt', '-booking_id')
+        scope = (params.get('scope') or '').strip().lower()
+        sort_param = (params.get('sort') or 'newest').strip().lower()
+        origin_barangay = params.get('origin_barangay')
+        origin_city = params.get('origin_city')
+        if origin_barangay is None:
+            origin_barangay = getattr(current_user, 'barangay', '') or ''
+        if origin_city is None:
+            origin_city = getattr(current_user, 'city', '') or ''
 
-        return queryset
+        if scope not in ('same_barangay', 'radius', 'same_city') and sort_param != 'nearest':
+            return queryset
+
+        radius_km = 5.0
+        if params.get('radius_km'):
+            try:
+                parsed_radius = float(params.get('radius_km'))
+                if parsed_radius > 0:
+                    radius_km = parsed_radius
+            except (ValueError, TypeError):
+                pass
+
+        norm_origin_brgy = normalize_barangay(origin_barangay)
+        norm_origin_city = normalize_city(origin_city)
+        origin_coords = resolve_coordinates(origin_barangay, origin_city)
+
+        items = list(queryset)
+        filtered = []
+        for item in items:
+            dist, label = compute_proximity(origin_barangay, origin_city, item.barangay, item.city)
+            item._distance_km = dist
+            item._proximity_label = label
+            item_brgy = normalize_barangay(item.barangay)
+            item_city = normalize_city(item.city)
+
+            if scope == 'same_barangay':
+                if not norm_origin_brgy:
+                    continue
+                if item_brgy != norm_origin_brgy:
+                    continue
+                if norm_origin_city and item_city and item_city != norm_origin_city:
+                    continue
+            elif scope == 'same_city':
+                if norm_origin_city and item_city != norm_origin_city:
+                    continue
+            elif scope == 'radius':
+                if origin_coords is not None:
+                    if dist is None or dist > radius_km:
+                        continue
+                else:
+                    # Graceful fallback outside CDO / Misamis Oriental coordinate map.
+                    if norm_origin_city and item_city != norm_origin_city:
+                        continue
+            filtered.append(item)
+
+        if sort_param == 'nearest':
+            filtered.sort(
+                key=lambda item: (
+                    item._distance_km is None,
+                    item._distance_km if item._distance_km is not None else 999999.0,
+                    -(item.createdAt.timestamp() if item.createdAt else 0.0),
+                )
+            )
+        return filtered
 
 
 class PublicPendingPostsView(generics.ListAPIView):
@@ -409,7 +472,10 @@ class BookingPenaltyStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(penalty_status(request.user))
+        return Response({
+            **penalty_status(request.user),
+            'pending_review': get_pending_mandatory_review(request.user),
+        })
 
 
 class MyBookingsView(generics.ListAPIView):
@@ -565,6 +631,7 @@ class BookingProposalRespondView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def patch(self, request, proposal_id):
         try:
             proposal = tbl_booking_proposal.objects.select_related('booking_id', 'proposer_id').get(proposal_id=proposal_id)
@@ -572,6 +639,16 @@ class BookingProposalRespondView(APIView):
             return Response({'error': 'Proposal not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         booking = proposal.booking_id
+        action = request.data.get('action', '').strip().lower()
+        if action == 'withdraw':
+            if proposal.proposer_id_id != request.user.pk:
+                return Response({'error': 'Only the applicant can withdraw their own bid.'}, status=403)
+            tbl_booking.objects.select_for_update().get(pk=booking.pk)
+            if not tbl_booking_proposal.objects.filter(pk=proposal.pk, status='Pending').update(status='Withdrawn'):
+                raise ValidationError({'error': 'Only a pending bid can be withdrawn.'})
+            proposal.refresh_from_db()
+            publish([proposal.proposer_id_id, booking.poster_id_id], {'type': 'booking.changed', 'booking_id': str(booking.pk)})
+            return Response({'message': 'Bid withdrawn without a cancellation penalty.', 'proposal': BookingProposalSerializer(proposal).data})
         if booking.poster_id != request.user:
             return Response({'error': 'Only the booking creator can respond to proposals.'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -583,15 +660,25 @@ class BookingProposalRespondView(APIView):
             return Response({'error': f'Proposal has already been {proposal.status}.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if action == 'accept':
-            booking, accepter = accept_engagement(booking.pk, request.user, proposal.pk)
+            schedule_keys = ('start_time', 'end_time', 'daily_start_time', 'daily_end_time', 'work_days')
+            schedule = None
+            if any(key in request.data for key in schedule_keys):
+                schedule_serializer = RepostScheduleSerializer(data=request.data)
+                schedule_serializer.is_valid(raise_exception=True)
+                schedule = schedule_serializer.validated_data
+            booking, accepter = accept_engagement(booking.pk, request.user, proposal.pk, schedule=schedule)
             proposal.refresh_from_db()
 
             # Notify proposer
             poster_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
+            start_note = (
+                f" starting {booking.start_time.astimezone(PH_TIME).strftime('%b %d, %Y')}"
+                if schedule is not None and booking.start_time else ''
+            )
             send_in_app_notification(
                 receiver=proposal.proposer_id,
                 sender=request.user,
-                message=f"{poster_name} accepted your offer of P{proposal.proposed_rate}! The booking is now confirmed."
+                message=f"{poster_name} accepted your offer of ₱{proposal.proposed_rate:,.2f}{start_note}! The booking is now confirmed."
             )
 
             return Response({
@@ -702,7 +789,7 @@ class BookingRecommendationsView(APIView):
                     score += 25
 
                 # Fair rate bonus
-                if job.rate_amount >= Decimal('500.00'):
+                if job.rate_amount is not None and job.rate_amount >= Decimal('500.00'):
                     score += 10
 
                 from .serializers import get_signed_avatar
@@ -712,7 +799,7 @@ class BookingRecommendationsView(APIView):
                 scored_jobs.append({
                     'booking_id': str(job.booking_id),
                     'title': ", ".join(job.service_category) if isinstance(job.service_category, list) else str(job.service_category),
-                    'rate_amount': str(job.rate_amount),
+                    'rate_amount': str(job.rate_amount) if job.rate_amount is not None else None,
                     'rate_period': job.rate_period,
                     'location': display_loc,
                     'barangay': job.barangay,

@@ -241,6 +241,7 @@ class ReviewTests(APITestCase):
         response = self.client.post(self.create_url, {
             "booking_id": str(self.completed_booking.booking_id),
             "rating": 5,
+            "would_recommend": True,
             "unstructured_feedback": "Great service indeed!",
             "nlp_sentiment": "HappyVibes"  # Invalid — not in choices
         }, **headers)
@@ -261,6 +262,7 @@ class ReviewTests(APITestCase):
         payload = {
             "booking_id": str(self.completed_booking.booking_id),
             "rating": 5,
+            "would_recommend": True,
             "unstructured_feedback": "Outstanding cleaning work! Very punctual.",
             "nlp_sentiment": "Positive"
         }
@@ -272,7 +274,20 @@ class ReviewTests(APITestCase):
         self.assertEqual(review.reviewer_id, self.homeowner)
         self.assertEqual(review.reviewee_id, self.kasambahay)
         self.assertEqual(review.rating, 5)
+        self.assertIs(review.would_recommend, True)
         self.assertEqual(review.nlp_sentiment, "Positive")
+
+    def test_homeowner_review_requires_would_recommend(self):
+        """Homeowner reviewing Kasambahay must answer would_recommend."""
+        self.client.force_authenticate(user=self.homeowner)
+        response = self.client.post(self.create_url, {
+            "booking_id": str(self.completed_booking.booking_id),
+            "rating": 5,
+            "unstructured_feedback": "Outstanding cleaning work! Very punctual.",
+        }, **{'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("would_recommend", response.data)
+        self.assertEqual(tbl_review.objects.count(), 0)
 
     def test_accepter_reviews_poster_success(self):
         """Kasambahay (accepter) reviews Homeowner (poster) — golden path."""
@@ -282,6 +297,7 @@ class ReviewTests(APITestCase):
         payload = {
             "booking_id": str(self.completed_booking.booking_id),
             "rating": 4,
+            "would_recommend": True,
             "unstructured_feedback": "Polite employer and clear instructions.",
             "nlp_sentiment": "Positive"
         }
@@ -292,6 +308,26 @@ class ReviewTests(APITestCase):
         self.assertEqual(review.reviewer_id, self.kasambahay)
         self.assertEqual(review.reviewee_id, self.homeowner)
         self.assertEqual(review.rating, 4)
+        self.assertIs(review.would_recommend, True)
+
+    def test_kasambahay_review_requires_would_recommend(self):
+        self.client.force_authenticate(user=self.kasambahay)
+        payload = {
+            'booking_id': str(self.completed_booking.pk), 'rating': 5,
+            'unstructured_feedback': 'Respectful homeowner and clear instructions.',
+        }
+        for extra in ({}, {'would_recommend': None}):
+            with self.subTest(extra=extra):
+                response = self.client.post(self.create_url, {**payload, **extra}, format='json',
+                    HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn('would_recommend', response.data)
+                self.assertIn('this Homeowner to other Kasambahays', str(response.data['would_recommend']))
+                self.assertEqual(tbl_review.objects.count(), 0)
+        response = self.client.post(self.create_url, {**payload, 'would_recommend': False}, format='json',
+            HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIs(tbl_review.objects.get().would_recommend, False)
 
     # ─────────────────────────────────────────────────────────────────────
     # IDEMPOTENCY CACHE BEHAVIOR
@@ -306,6 +342,7 @@ class ReviewTests(APITestCase):
         payload = {
             "booking_id": str(self.completed_booking.booking_id),
             "rating": 5,
+            "would_recommend": True,
             "unstructured_feedback": "Outstanding cleaning work! Very punctual.",
             "nlp_sentiment": "Positive"
         }
@@ -325,6 +362,7 @@ class ReviewTests(APITestCase):
         self.client.post(self.create_url, {
             "booking_id": str(self.completed_booking.booking_id),
             "rating": 5,
+            "would_recommend": True,
             "unstructured_feedback": "First attempt feedback here.",
             "nlp_sentiment": "Positive"
         }, **{'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())})
@@ -333,6 +371,7 @@ class ReviewTests(APITestCase):
         response = self.client.post(self.create_url, {
             "booking_id": str(self.completed_booking.booking_id),
             "rating": 3,
+            "would_recommend": False,
             "unstructured_feedback": "Second attempt feedback here.",
             "nlp_sentiment": "Neutral"
         }, **{'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())})
@@ -397,6 +436,7 @@ class ReviewTests(APITestCase):
         response = self.client.post(self.create_url, {
             "booking_id": str(self.completed_booking.booking_id),
             "rating": 1,
+            "would_recommend": False,
             "unstructured_feedback": "Really bad experience here.",
             "nlp_sentiment": "Negative"
         }, **{'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())})
@@ -446,6 +486,7 @@ class ReviewTests(APITestCase):
         response = self.client.post(self.create_url, {
             "booking_id": str(self.completed_booking.booking_id),
             "rating": 5,
+            "would_recommend": True,
             "unstructured_feedback": "x" * 1000,
             "nlp_sentiment": "Positive"
         }, **{'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())})
@@ -578,7 +619,7 @@ class ReviewTests(APITestCase):
     def test_provider_failure_never_saves_neutral_and_can_retry(self):
         self.client.force_authenticate(user=self.homeowner)
         key = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
-        body = {'booking_id': str(self.completed_booking.pk), 'rating': 1,
+        body = {'booking_id': str(self.completed_booking.pk), 'rating': 1, 'would_recommend': False,
                 'unstructured_feedback': 'Dili kabalo mo lipyo', 'nlp_sentiment': 'Neutral'}
         self.analyzer.side_effect = SentimentUnavailable('provider_error_event')
         failed = self.client.post(self.create_url, body, **key)
@@ -595,7 +636,7 @@ class ReviewTests(APITestCase):
     def test_replay_survives_cache_clear_and_rejects_changed_terms(self):
         self.client.force_authenticate(user=self.homeowner)
         key = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
-        body = {'booking_id': str(self.completed_booking.pk), 'rating': 4,
+        body = {'booking_id': str(self.completed_booking.pk), 'rating': 4, 'would_recommend': True,
                 'unstructured_feedback': 'The service was very good.'}
         first = self.client.post(self.create_url, body, **key)
         cache.clear()
@@ -609,7 +650,7 @@ class ReviewTests(APITestCase):
 
     def test_submission_key_scoped_to_reviewer(self):
         key = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
-        body = {'booking_id': str(self.completed_booking.pk), 'rating': 4,
+        body = {'booking_id': str(self.completed_booking.pk), 'rating': 4, 'would_recommend': True,
                 'unstructured_feedback': 'The service was very good.'}
         self.client.force_authenticate(user=self.homeowner)
         first = self.client.post(self.create_url, body, **key)
@@ -617,6 +658,8 @@ class ReviewTests(APITestCase):
         second = self.client.post(self.create_url, body, **key)
         self.assertEqual(first.status_code, 201)
         self.assertEqual(second.status_code, 201)
+        self.assertIs(first.data['data']['would_recommend'], True)
+        self.assertIs(second.data['data']['would_recommend'], True)
         self.assertNotEqual(first.data['data']['review_id'], second.data['data']['review_id'])
         self.assertEqual(tbl_review.objects.count(), 2)
 

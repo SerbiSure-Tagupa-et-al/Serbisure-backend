@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from decimal import Decimal
 from .models import tbl_worker_profile
+from booking.wage_policy import maximum_rate_for
 
 SERVICES = ['Cleaning', 'Child_care', 'Cooking', 'Caregiver', 'Laundry', 'All-around']
 SKILLS = ['Meal preparation', 'Ironing', 'Deep cleaning', 'Infant care', 'Child supervision',
@@ -37,6 +38,16 @@ class WorkerProfileSerializer(serializers.ModelSerializer):
         if len(values) > 3:
             raise serializers.ValidationError('Add up to three training records.')
         return values
+
+    def validate_desired_daily_rate(self, value):
+        if value is not None and value > maximum_rate_for('short_term'):
+            raise serializers.ValidationError(f"Maximum expected Part-time / Daily rate is ₱{maximum_rate_for('short_term'):,.2f} / day.")
+        return value
+
+    def validate_desired_monthly_rate(self, value):
+        if value is not None and value > maximum_rate_for('long_term'):
+            raise serializers.ValidationError(f"Maximum expected Full-time / Monthly rate is ₱{maximum_rate_for('long_term'):,.2f} / month.")
+        return value
 
     def validate(self, attrs):
         def value(key):

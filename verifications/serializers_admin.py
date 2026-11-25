@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import tbl_documents, tbl_audit_logs
 from accounts.models import tbl_user_profile
 from core.utils import get_signed_cloudinary_url
+from .services.document_screening import screening_for_document
 
 
 class UserProfileSnippetSerializer(serializers.ModelSerializer):
@@ -18,6 +19,7 @@ class AdminDocumentDetailSerializer(serializers.ModelSerializer):
     user_profile = UserProfileSnippetSerializer(read_only=True)
     document_image_url = serializers.SerializerMethodField()
     verifyBy_email = serializers.SerializerMethodField()
+    screening = serializers.SerializerMethodField()
 
     class Meta:
         model = tbl_documents
@@ -32,12 +34,14 @@ class AdminDocumentDetailSerializer(serializers.ModelSerializer):
             'ocr_raw_text',
             'ocr_match_score',
             'ocr_discrepancies',
+            'screening',
             'ocr_processed_at',
             'rejection_reason',
             'verifyBy',
             'verifyBy_email',
             'user_profile',
             'created_at',
+            'media_purged_at',
         ]
 
     def get_document_image_url(self, instance):
@@ -46,10 +50,15 @@ class AdminDocumentDetailSerializer(serializers.ModelSerializer):
     def get_verifyBy_email(self, instance):
         return instance.verifyBy.email if instance.verifyBy else None
 
+    def get_screening(self, instance):
+        return screening_for_document(instance)
+
 
 class AdminDocumentActionSerializer(serializers.Serializer):
     verification_status = serializers.ChoiceField(choices=['Verified', 'Rejected'])
     rejection_reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
+    override_warning = serializers.BooleanField(required=False, default=False)
+    override_reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
 
     def validate(self, data):
         if data.get('verification_status') == 'Rejected' and not data.get('rejection_reason'):
@@ -61,6 +70,7 @@ class UserDocumentStatusSerializer(serializers.ModelSerializer):
     document_image_url = serializers.SerializerMethodField()
     is_expired = serializers.SerializerMethodField()
     can_replace = serializers.SerializerMethodField()
+    screening = serializers.SerializerMethodField()
 
     class Meta:
         model = tbl_documents
@@ -76,10 +86,12 @@ class UserDocumentStatusSerializer(serializers.ModelSerializer):
             'extracted_data',
             'ocr_match_score',
             'ocr_discrepancies',
+            'screening',
             'ocr_processed_at',
             'ocr_retry_count',
             'rejection_reason',
             'created_at',
+            'media_purged_at',
         ]
 
     def get_document_image_url(self, instance):
@@ -92,6 +104,9 @@ class UserDocumentStatusSerializer(serializers.ModelSerializer):
     def get_can_replace(self, instance):
         from .services.document_upload import document_can_be_replaced
         return document_can_be_replaced(instance)
+
+    def get_screening(self, instance):
+        return screening_for_document(instance)
 
 
 class AdminAuditLogSerializer(serializers.ModelSerializer):

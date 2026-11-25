@@ -1,6 +1,6 @@
 from django.urls import path
 from .penalty_api import PenaltyUsersView, PenaltyReviewView, PenaltyHistoryView, PenaltyExportView
-from .worker_views import WorkerProfileView, WorkerCvView, WorkerCvExportView
+from .worker_views import WorkerProfileView, WorkerCvView, WorkerCvExportView, PublicWorkerHistoryView
 from .token_views import AccountTokenRefreshView as TokenRefreshView
 from .views import (
     UserRegistrationView,
@@ -60,6 +60,7 @@ urlpatterns = [
 
     # Public Profile Endpoint
     path('public-profile/<uuid:id>/', PublicProfileView.as_view(), name='public-profile'),
+    path('public-profile/<uuid:user_id>/work-history/', PublicWorkerHistoryView.as_view(), name='public-worker-history'),
 
     # User Search Endpoint (Tier 2-2)
     path('search/', UserSearchView.as_view(), name='user-search'),

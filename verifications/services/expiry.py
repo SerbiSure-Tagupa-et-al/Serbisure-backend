@@ -17,7 +17,7 @@ from verifications.services.audit_logger import record_audit_log
 
 SALT = 'verifications.expired-clearances.v1'
 CONFIRMATION_SECONDS = 300
-CLEARANCES = ('nbi_clearance', 'police_clearance')
+CLEARANCES = ('nbi_clearance', 'police_clearance', 'tesda_nc2')
 
 
 class ExpiryPreviewChanged(APIException):

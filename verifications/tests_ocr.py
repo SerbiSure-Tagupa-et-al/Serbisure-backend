@@ -251,7 +251,14 @@ class VerificationWorkflowTests(APITestCase):
         action_url2 = reverse("admin-document-action", kwargs={"document_id": police_doc_id})
         self.client.patch(action_url2, {"verification_status": "Verified"})
 
-        # Both clearances and the existing profile photo are now verified.
+        # The clearances alone do not satisfy the new skill-certification requirement.
+        self.kasambahay.refresh_from_db()
+        self.assertEqual(self.kasambahay.verification_status, "Pending")
+        tbl_documents.objects.create(
+            user_profile=self.kasambahay, document_type="tesda_nc2",
+            document_url="verified-test-certificate", verification_status="Verified",
+        )
+        # All required credentials and the existing profile photo are now verified.
         self.kasambahay.refresh_from_db()
         self.assertEqual(self.kasambahay.verification_status, "Verified")
 

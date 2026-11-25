@@ -2,6 +2,7 @@ from rest_framework import serializers
 from accounts.workforce import PH_TIME
 from .models import tbl_documents
 from .services.document_fields import NAME_FIELDS
+from .services.document_screening import SCREENING_KEY, screening_for_document
 from .services.document_upload import create_uploaded_document
 from .services.matching_service import detect_discrepancies, missing_identity_warning, normalize_document_names
 import cloudinary.utils
@@ -39,6 +40,8 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         representation = super().to_representation(instance)
         public_id = instance.document_url
+        if not public_id:
+            representation['document_url'] = None
 
         if public_id:
             if public_id.startswith('http://') or public_id.startswith('https://'):
@@ -94,6 +97,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
     ocrExtractedData = serializers.SerializerMethodField()
     ocrDiscrepancies = serializers.JSONField(source='ocr_discrepancies', read_only=True)
     ocrMatchScore = serializers.FloatField(source='ocr_match_score', read_only=True)
+    screening = serializers.SerializerMethodField()
 
     # Package & Companion Document Fields
     primaryStatus = serializers.SerializerMethodField()
@@ -121,7 +125,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
             'submittedDate', 'issuedDate', 'validityDate', 'status', 'primaryStatus', 'recordStatus',
             'applicantStatus', 'isExpired', 'validUntil',
             'documentImage', 'documentImageBack', 'barangay', 'contactNumber', 'email', 'notes',
-            'faceLivenessMatchScore', 'ocrExtractedData', 'ocrDiscrepancies', 'ocrMatchScore',
+            'faceLivenessMatchScore', 'ocrExtractedData', 'ocrDiscrepancies', 'ocrMatchScore', 'screening',
             'isPackage', 'packageLabel', 'secondaryDocumentId', 'secondaryDocumentImage', 'secondaryDocumentType',
             'secondaryDocumentNumber', 'secondaryIssuedDate', 'secondaryValidityDate',
             'secondaryStatus', 'secondaryNotes', 'secondaryOcrData', 'secondaryOcrDiscrepancies',
@@ -136,6 +140,12 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         stored = obj.ocr_extracted_data or {}
         normalized = normalize_document_names(stored, obj.ocr_raw_text)
         flags = list(data['ocrDiscrepancies'] or [])
+        if not obj.media_purged_at:
+            from django.utils import timezone
+            from .services.media_retention import eligibility
+            if eligibility(obj, timezone.now())[1]:
+                flags.append({'field': 'review_overdue', 'severity': 'high',
+                              'message': 'This document has been pending for 30 days. Please complete the review before the 60-day image retention deadline.'})
         if normalized != stored:
             name_fields = (*NAME_FIELDS, 'full_name', 'name')
             data['ocrExtractedData'].update({field: normalized[field] for field in name_fields if field in normalized})
@@ -145,16 +155,26 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
             data['ocrMatchScore'] = score
 
         raw_text = obj.ocr_raw_text
-        if raw_text is None and obj.ocr_processed_at:
+        if raw_text is None and obj.ocr_processed_at and not obj.media_purged_at:
             raw_text = ''
         evidence = {**normalized, 'document_number': obj.document_number} if obj.document_number else normalized
         warning = missing_identity_warning(evidence, obj.document_type, raw_text)
         if warning and not any(flag.get('field') == 'image_quality' for flag in flags):
             flags.append(warning)
         if flags != data['ocrDiscrepancies'] and data['status'] != 'VERIFIED':
-            data['recordStatus'] = 'Flagged' if any(flag.get('severity') == 'high' for flag in flags) else 'Under Review'
+            data['recordStatus'] = 'Flagged' if any(flag.get('severity') in ('high', 'critical') for flag in flags) else 'Under Review'
         data['ocrDiscrepancies'] = flags
+        screening = data.get('screening')
+        if screening and screening.get('has_blocking_flag'):
+            if data['status'] != 'VERIFIED':
+                data['recordStatus'] = 'Flagged'
+            checks = screening.get('checks') or {}
+            if (checks.get('document_type_match') == 'fail' or checks.get('image_clarity') == 'fail') and data.get('ocrMatchScore') is not None:
+                data['ocrMatchScore'] = 0.0
         return data
+
+    def get_screening(self, obj):
+        return screening_for_document(obj)
 
     def _get_companion_doc(self, obj):
         # Independent records: package metadata must not mask another document's status.
@@ -239,6 +259,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         mapping = {
             'nbi_clearance': 'NBI CLEARANCE',
             'police_clearance': 'Police Clearance',
+            'tesda_nc2': 'TESDA NC II',
             'national_id_front': 'National ID (Front)',
             'national_id_back': 'National ID (Back)',
         }
@@ -251,6 +272,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         val = (
             extracted.get('clearance_number') or
             extracted.get('philsys_number') or
+            extracted.get('certificate_number') or
             extracted.get('document_number')
         )
         if val:
@@ -321,9 +343,9 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         companion = self._get_companion_doc(obj)
         has_critical = False
         if obj.ocr_discrepancies:
-            has_critical = any(d.get('severity') == 'high' for d in obj.ocr_discrepancies)
+            has_critical = any(d.get('severity') in ('high', 'critical') for d in obj.ocr_discrepancies)
         if not has_critical and companion and companion.ocr_discrepancies:
-            has_critical = any(d.get('severity') == 'high' for d in companion.ocr_discrepancies)
+            has_critical = any(d.get('severity') in ('high', 'critical') for d in companion.ocr_discrepancies)
         return 'Flagged' if has_critical else 'Under Review'
 
     def _sign_cloudinary_url(self, public_id):
@@ -363,6 +385,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
             mapping = {
                 'nbi_clearance': 'NBI CLEARANCE',
                 'police_clearance': 'Police Clearance',
+                'tesda_nc2': 'TESDA NC II',
                 'national_id_front': 'National ID (Front)',
                 'national_id_back': 'National ID (Back)',
             }
@@ -379,6 +402,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         val = (
             extracted.get('clearance_number') or
             extracted.get('philsys_number') or
+            extracted.get('certificate_number') or
             extracted.get('document_number')
         )
         return val or "Not Detected"
@@ -464,6 +488,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
 
     def get_ocrExtractedData(self, obj):
         data = dict(obj.ocr_extracted_data or {})
+        data.pop(SCREENING_KEY, None)
         if not data.get('philsys_number') and obj.document_number:
             data['philsys_number'] = obj.document_number
             data['document_number'] = obj.document_number

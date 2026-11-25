@@ -129,6 +129,7 @@ class VerificationEvidenceTests(APITestCase):
         worker = User.objects.create_user(email='evidence-worker@test.com', username='evidence-worker', account_type='Kasambahay')
         nbi = tbl_documents.objects.create(user_profile=worker, document_type='nbi_clearance', document_url='nbi', verification_status='Pending')
         police = tbl_documents.objects.create(user_profile=worker, document_type='police_clearance', document_url='police', verification_status='Pending')
+        tbl_documents.objects.create(user_profile=worker, document_type='tesda_nc2', document_url='tesda', verification_status='Verified')
         for first, second, applicant in ((self.front, self.back, self.owner), (nbi, police, worker)):
             tbl_documents.objects.create(user_profile=applicant, document_type='profile_photo',
                 document_url='test/approved-photo', verification_status='Verified')

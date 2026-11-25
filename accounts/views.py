@@ -421,12 +421,16 @@ class AdminDashboardActivityView(APIView):
                 minimum = float(policy['minimum_rate'])
             except ValidationError:
                 minimum = None
-            amount = float(booking.rate_amount)
+            amount = float(booking.rate_amount) if booking.rate_amount is not None else None
+            is_worker_availability = poster_role.lower() == 'kasambahay' and assignment is None
             needs_review = booking.rate_needs_review or minimum is None
-            is_below_min = minimum is not None and amount < minimum
+            is_below_min = minimum is not None and amount is not None and amount < minimum and not is_worker_availability
             short_term_count = pair_booking_count(poster.pk, assignment.accepter_id_id, booking.start_time) if assignment else 0
             is_capped = short_term_count >= 3
-            if needs_review:
+            if is_worker_availability:
+                compliance_status = 'ACTIVE'
+                needs_review = False
+            elif needs_review:
                 compliance_status = 'REQUIRES_REVIEW'
             elif is_below_min:
                 compliance_status = 'BELOW_MINIMUM_WAGE'
@@ -458,6 +462,7 @@ class AdminDashboardActivityView(APIView):
                 'monthlyBookingsCount': short_term_count,
                 'isCapped': is_capped,
                 'offeredWage': amount,
+                'posterAccountType': poster_role,
                 'ratePeriod': booking.rate_period,
                 'pairKey': ':'.join(sorted([str(poster.pk), str(assignment.accepter_id_id)])) if assignment else None,
                 'rateNeedsReview': needs_review,
@@ -994,7 +999,7 @@ class ExportUserDataView(APIView):
         for b in posted_bookings:
             b['booking_id'] = str(b['booking_id'])
             b['createdAt'] = str(b['createdAt'])
-            b['rate_amount'] = str(b['rate_amount'])
+            b['rate_amount'] = str(b['rate_amount']) if b['rate_amount'] is not None else None
             addr_parts = [b.get(k) for k in ['street', 'barangay', 'city', 'province'] if b.get(k)]
             b['full_address'] = ', '.join(addr_parts) if addr_parts else ''
 

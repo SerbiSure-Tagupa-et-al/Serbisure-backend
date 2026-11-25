@@ -87,7 +87,7 @@ class PostLifecycleTests(APITestCase):
             self.assertEqual(second.data['booking_id'], first.data['booking_id'])
             self.assertNotEqual(first.data['booking_id'], str(source.pk))
             fresh = tbl_booking.objects.get(pk=first.data['booking_id'])
-            self.assertEqual((fresh.poster_id_id, fresh.special_instruction, fresh.rate_amount), (poster.pk, 'Original post', source.rate_amount))
+            self.assertEqual((fresh.poster_id_id, fresh.special_instruction, fresh.rate_amount), (poster.pk, 'Original post', None if poster.account_type == 'Kasambahay' else source.rate_amount))
             self.assertIsNone(fresh.recipient_id_id)
             self.assertFalse(fresh.proposals.exists())
             old_application.refresh_from_db()

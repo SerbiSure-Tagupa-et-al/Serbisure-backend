@@ -8,7 +8,7 @@ from rest_framework.throttling import UserRateThrottle
 from .models import tbl_user_profile, tbl_worker_profile
 from .permissions import IsKasambahay
 from .worker_serializers import WorkerProfileSerializer
-from .cv_service import snapshot, pdf_bytes, csv_bytes
+from .cv_service import snapshot, pdf_bytes, csv_bytes, verified_work_history
 
 
 class CvThrottle(UserRateThrottle):
@@ -57,6 +57,29 @@ class WorkerProfileView(APIView):
                 user.save(update_fields=fields)
         return Response({**WorkerProfileSerializer(instance).data,
                          'languages': [value.strip() for value in (user.language or '').split(',') if value.strip()]})
+
+
+class PublicWorkerHistoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        worker = get_object_or_404(tbl_user_profile, pk=user_id, is_active=True)
+        if worker.account_type not in ('Kasambahay', 'Homeowner'):
+            data = {
+                'user_id': str(worker.pk),
+                'account_type': worker.account_type,
+                'summary': {
+                    'completed_jobs_count': 0,
+                    'recommended_count': 0,
+                    'repeat_employers_count': 0,
+                },
+                'jobs': [],
+            }
+        else:
+            data = verified_work_history(worker, limit=20)
+        response = Response(data)
+        response['Cache-Control'] = 'private, no-store'
+        return response
 
 
 class WorkerCvView(APIView):

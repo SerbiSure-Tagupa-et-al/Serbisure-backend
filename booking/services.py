@@ -47,6 +47,58 @@ def pair_booking_count(first_id, second_id, at=None):
     ).values('booking_id').distinct().count()
 
 
+def _participant_display_name(user):
+    full = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+    return full or getattr(user, 'username', '') or 'Service Partner'
+
+
+def get_pending_mandatory_review(user):
+    """Return the most recent reviewable Completed booking still missing a review from user."""
+    if not user or not getattr(user, 'is_authenticated', False):
+        return None
+    if getattr(user, 'account_type', None) not in ('Homeowner', 'Kasambahay'):
+        return None
+    from reviews.models import tbl_review
+    reviewed_ids = tbl_review.objects.filter(reviewer_id=user).values_list('booking_id_id', flat=True)
+    completed = (
+        tbl_booking.objects.filter(booking_status='Completed')
+        .filter(Q(poster_id=user) | Q(assignments__accepter_id=user))
+        .exclude(pk__in=reviewed_ids)
+        .select_related('poster_id')
+        .prefetch_related('assignments__accepter_id')
+        .distinct()
+        .order_by('-completed_at', '-createdAt')
+    )
+    for booking in completed:
+        assignment = next(iter(booking.assignments.all()), None)
+        if not assignment or not assignment.accepter_id_id:
+            continue
+        if booking.poster_id_id == assignment.accepter_id_id:
+            continue
+        reviewee = assignment.accepter_id if booking.poster_id_id == user.pk else booking.poster_id
+        if not reviewee or reviewee.pk == user.pk:
+            continue
+        return {
+            'booking_id': str(booking.pk),
+            'reviewee_name': _participant_display_name(reviewee),
+            'service_category': booking.service_category if isinstance(booking.service_category, list) else [],
+        }
+    return None
+
+
+def assert_no_pending_review(user):
+    pending = get_pending_mandatory_review(user)
+    if pending:
+        raise PermissionDenied({
+            'code': 'pending_mandatory_review',
+            'detail': (
+                f"Please submit your review for your completed booking with {pending['reviewee_name']} "
+                "before creating, applying for, or accepting a new booking."
+            ),
+            'pending_review': pending,
+        })
+
+
 def ensure_eligible_pair(poster, accepter):
     if poster.pk == accepter.pk:
         raise ValidationError({'error': 'You cannot accept or propose on your own booking.'})
@@ -72,8 +124,14 @@ def ensure_open(booking, *, require_future=True):
     if require_future and booking.start_time <= timezone.now():
         raise ValidationError({'code': 'schedule_passed', 'error': PASSED_SCHEDULE_MESSAGE})
     validate_booking_duration(booking.booking_type, booking.start_time, booking.end_time)
-    if booking.rate_needs_review:
+    if booking.rate_needs_review and not (booking.poster_id.account_type == 'Kasambahay' and not booking.recipient_id_id):
         raise ValidationError({'error': 'The poster must confirm the monthly amount on this legacy post before it can be accepted.'})
+
+
+def is_public_ad(booking):
+    """Hours-only advertisements have no agreed calendar date until a hire."""
+    return (not booking.recipient_id_id and not booking.work_days and booking.end_time is None
+            and booking.daily_start_time is not None and booking.daily_end_time is not None)
 
 
 def close_other_applications(booking, selected_user):
@@ -90,10 +148,49 @@ def close_other_applications(booking, selected_user):
     publish([booking.poster_id_id, selected_user.pk, *recipients], {'type': 'booking.changed', 'booking_id': str(booking.pk)})
 
 
-def enforce_pair_cap(booking, accepter):
-    if booking.booking_type == 'short_term' and pair_booking_count(booking.poster_id_id, accepter.pk, booking.start_time) >= SHORT_TERM_CAP:
+def validate_hire_schedule(booking_type, schedule):
+    """Validate optional calendar schedule supplied when hiring an applicant on a public post."""
+    start_time = schedule.get('start_time')
+    end_time = schedule.get('end_time')
+    daily_start = schedule.get('daily_start_time')
+    daily_end = schedule.get('daily_end_time')
+    days = list(schedule.get('work_days') or [])
+    if not days or len(set(days)) != len(days):
+        raise ValidationError({'work_days': 'Select at least one unique working day.'})
+    if (daily_start is None) != (daily_end is None) or not daily_start or not daily_end:
+        raise ValidationError({'daily_end_time': 'Provide both daily working times.'})
+    if daily_start >= daily_end:
+        raise ValidationError({'daily_end_time': 'The end of the shift must be after its start.'})
+    now = timezone.now()
+    if not start_time or start_time <= now:
+        raise ValidationError({'start_time': 'Start time must be in the future.'})
+    if end_time is not None:
+        if end_time <= now:
+            raise ValidationError({'end_time': 'End time must be in the future.'})
+        if end_time <= start_time:
+            raise ValidationError({'end_time': 'End time must be strictly after the start time.'})
+    for field, stamp, clock in (('start_time', start_time, daily_start), ('end_time', end_time, daily_end)):
+        if stamp and clock and stamp.astimezone(PH_TIME).time().replace(tzinfo=None) != clock:
+            raise ValidationError({field: 'The schedule must match the selected working time in the Philippines.'})
+    weekdays = ['M', 'T', 'W', 'Th', 'F', 'S', 'Su']
+    start_local = start_time.astimezone(PH_TIME)
+    start_day = weekdays[start_local.weekday()]
+    short_range = (booking_type == 'short_term' and end_time is not None and end_time.astimezone(PH_TIME).date() > start_local.date())
+    if short_range:
+        day_span = (end_time.astimezone(PH_TIME).date() - start_local.date()).days
+        first = start_local.weekday()
+        if not any(weekdays[(first + offset) % 7] in days for offset in range(min(day_span + 1, 7))):
+            raise ValidationError({'work_days': 'Select a working day within the date range.'})
+    elif start_day not in days:
+        raise ValidationError({'work_days': 'The start date must fall on a selected working day.'})
+    validate_booking_duration(booking_type, start_time, end_time)
+
+
+def enforce_pair_cap(booking, accepter, *, service_start=None):
+    at = service_start if service_start is not None else (timezone.now() if is_public_ad(booking) else booking.start_time)
+    if booking.booking_type == 'short_term' and pair_booking_count(booking.poster_id_id, accepter.pk, at) >= SHORT_TERM_CAP:
         raise ValidationError({'code': 'short_term_monthly_cap',
-                               'error': 'This pair has reached three short-term bookings this month. Use a long-term engagement and the DOLE contract form to continue.'})
+                               'error': 'This pair has reached 3 Part-time / Daily bookings this month. Switch to a Full-time / Monthly arrangement instead (RA 10361).'})
 
 
 def lock_participants(poster_id, accepter_id):
@@ -103,7 +200,7 @@ def lock_participants(poster_id, accepter_id):
 
 
 @transaction.atomic
-def accept_engagement(booking_id, actor, proposal_id=None):
+def accept_engagement(booking_id, actor, proposal_id=None, *, schedule=None):
     preview = get_object_or_404(tbl_booking, pk=booking_id)
     proposal = get_object_or_404(tbl_booking_proposal, pk=proposal_id, booking_id=preview) if proposal_id else None
     if proposal and preview.poster_id_id != actor.pk:
@@ -113,19 +210,35 @@ def accept_engagement(booking_id, actor, proposal_id=None):
     booking = get_object_or_404(tbl_booking.objects.select_for_update(), pk=booking_id)
     poster, accepter = people[booking.poster_id_id], people[accepter_id]
     ensure_eligible_pair(poster, accepter)
+    assert_no_pending_review(people[actor.pk])
     if booking.recipient_id_id and booking.recipient_id_id != accepter.pk:
         raise PermissionDenied('This private offer is addressed to another participant.')
-    ensure_open(booking)
+    public_ad = is_public_ad(booking)
+    ensure_open(booking, require_future=not (proposal and public_ad))
     if proposal:
         proposal = tbl_booking_proposal.objects.select_for_update().get(pk=proposal.pk)
         if proposal.status != 'Pending':
             raise ValidationError({'error': 'This proposal has already been resolved.'})
+    if schedule is not None:
+        validate_hire_schedule(booking.booking_type, schedule)
     amount = proposal.proposed_rate if proposal else booking.rate_amount
     validate_rate(amount, booking.booking_type, booking.region, booking.full_address, period=booking.rate_period)
-    enforce_pair_cap(booking, accepter)
+    enforce_pair_cap(booking, accepter, service_start=schedule['start_time'] if schedule is not None else None)
     booking.rate_amount = amount
+    booking.rate_needs_review = False
     booking.booking_status = 'Accepted'
-    booking.save(update_fields=['rate_amount', 'booking_status'])
+    fields = ['rate_amount', 'rate_needs_review', 'booking_status']
+    if schedule is not None:
+        booking.start_time = schedule['start_time']
+        booking.end_time = schedule.get('end_time')
+        booking.daily_start_time = schedule['daily_start_time']
+        booking.daily_end_time = schedule['daily_end_time']
+        booking.work_days = list(schedule['work_days'])
+        fields.extend(['start_time', 'end_time', 'daily_start_time', 'daily_end_time', 'work_days'])
+    elif proposal and public_ad:
+        booking.start_time = timezone.now()
+        fields.append('start_time')
+    booking.save(update_fields=fields)
     tbl_booking_assignment.objects.create(booking_id=booking, accepter_id=accepter)
     if proposal:
         proposal.status = 'Accepted'
@@ -142,8 +255,10 @@ def create_proposal(booking_id, actor, amount, period, message, *, apply_at_post
     message = inspect_outgoing(people[actor.pk], people[preview.poster_id_id], message, channel='proposal')
     booking = get_object_or_404(tbl_booking.objects.select_for_update(), pk=booking_id)
     ensure_eligible_pair(people[booking.poster_id_id], people[actor.pk])
+    assert_no_pending_review(people[actor.pk])
     if booking.recipient_id_id and booking.recipient_id_id != actor.pk:
         raise PermissionDenied('This private offer is addressed to another participant.')
+    enforce_pair_cap(booking, actor)
     if apply_at_posted_rate:
         if booking.poster_id.account_type != 'Homeowner' or booking.recipient_id_id:
             raise ValidationError({'error': 'Applications are only available on public job posts.'})
@@ -155,7 +270,6 @@ def create_proposal(booking_id, actor, amount, period, message, *, apply_at_post
     ensure_open(booking, require_future=False)
     amount = validate_rate(amount, booking.booking_type, booking.region, booking.full_address,
                            field='proposed_rate', period=period)
-    enforce_pair_cap(booking, actor)
     if booking.proposals.filter(proposer_id=actor, status='Pending').exists():
         raise ValidationError({'error': 'You already have a pending proposal for this post.'})
     return tbl_booking_proposal.objects.create(booking_id=booking, proposer_id=actor,

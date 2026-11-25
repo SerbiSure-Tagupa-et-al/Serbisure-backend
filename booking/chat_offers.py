@@ -13,7 +13,7 @@ from django.contrib.auth import get_user_model
 from chat.moderation import LANGUAGE_NOTICE
 from .models import tbl_booking
 from .serializers import BookingSerializer, BookingDetailSerializer, ChatOfferContextSerializer
-from .services import lock_participants, ensure_eligible_pair, enforce_pair_cap
+from .services import lock_participants, ensure_eligible_pair, enforce_pair_cap, assert_no_pending_review
 
 
 class ChatOfferThrottle(UserRateThrottle):
@@ -41,6 +41,7 @@ class ChatBookingOfferView(APIView):
         original_instruction = str(request.data.get('special_instruction') or '')
         instruction = inspect_outgoing(sender, recipient, original_instruction, channel='booking_offer')
         ensure_eligible_pair(sender, recipient)
+        assert_no_pending_review(sender)
         digest = hashlib.sha256(json.dumps(request.data, sort_keys=True, default=str).encode()).hexdigest()
         from chat.models import tbl_chat_message
         from chat.serializers import ChatMessageSerializer

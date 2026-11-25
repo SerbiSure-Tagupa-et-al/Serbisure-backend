@@ -5,6 +5,16 @@ import cloudinary.uploader
 from rest_framework.exceptions import APIException
 
 
+AVATAR_EAGER_TRANSFORMATION = [{
+    'width': 200,
+    'height': 200,
+    'crop': 'fill',
+    'gravity': 'face',
+    'quality': 'auto',
+    'fetch_format': 'webp',
+}]
+
+
 def save_profile_image(user, image_file):
     from verifications.services.profile_photos import check_photo_upload, save_photo_submission
     check_photo_upload(user)
@@ -13,6 +23,8 @@ def save_profile_image(user, image_file):
         image_file,
         folder='serbisure_profiles/',
         type='authenticated',
+        transformation=[{'width': 800, 'height': 800, 'crop': 'limit', 'quality': 'auto'}],
+        eager=AVATAR_EAGER_TRANSFORMATION,
     )
     cloudinary_ms = (perf_counter() - started_at) * 1000
     public_id = result.get('public_id')

@@ -121,6 +121,13 @@ class GatePassTests(TestCase):
         self.assertContains(response, 'Call the homeowner to check the IDs.')
         self.assertNotContains(response, 'Verified ID')
 
+    def test_worker_without_skill_certificate_cannot_show_verified_identity_on_pass(self):
+        self.worker.documents.filter(document_type='tesda_nc2').delete()
+        self.assertNotEqual(self.worker.verification_status, 'Verified')
+        response = self.check()
+        self.assertFalse(response.context['entry_allowed'])
+        self.assertNotContains(response, 'Verified ID')
+
     def test_copy_script_has_a_fresh_nonce_and_arbitrary_inline_scripts_stay_blocked(self):
         first, second = self.check(), self.check()
         nonce = first.context['csp_nonce']

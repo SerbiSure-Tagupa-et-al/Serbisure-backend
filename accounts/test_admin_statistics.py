@@ -52,8 +52,8 @@ class AdminStatisticsTests(APITestCase):
         self.assertEqual(self.client.get(self.active).data['active_lgus'], [])
         self.assertNotIn('Canitoan', [row['name'] for row in self.client.get(self.stats).data['barangays']])
 
-    def test_verification_counts_people_once_and_requires_both_documents(self):
-        for kind in ['nbi_clearance', 'police_clearance']:
+    def test_verification_counts_people_once_and_requires_all_documents(self):
+        for kind in ['nbi_clearance', 'police_clearance', 'tesda_nc2']:
             tbl_documents.objects.create(user_profile=self.worker, document_type=kind, document_url='test', verification_status='Pending')
         tbl_documents.objects.create(user_profile=self.owner, document_type='national_id_front', document_url='test', verification_status='Verified')
         row = self.client.get(self.stats).data['barangays'][0]

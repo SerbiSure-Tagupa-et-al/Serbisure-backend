@@ -128,6 +128,8 @@ class AdminDocumentActionView(APIView):
             tbl_documents.objects.select_related('user_profile'),
             document_id=document_id
         )
+        if document.media_purged_at or not document.document_url:
+            return Response({'error': 'The original image has been removed under the retention policy. Please request a new upload before another image review.'}, status=400)
 
         serializer = AdminDocumentActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -148,6 +150,33 @@ class AdminDocumentActionView(APIView):
         prev_status = document.verification_status
 
         if new_status == 'Verified':
+            from .services.document_screening import screening_for_document
+            screening = screening_for_document(document)
+            override_warning = bool(serializer.validated_data.get('override_warning'))
+            override_reason = (serializer.validated_data.get('override_reason') or '').strip()
+            audit_reason = None
+            audit_metadata = None
+            if screening and screening.get('has_blocking_flag'):
+                if not override_warning or not override_reason:
+                    return Response(
+                        {
+                            'error': (
+                                'This document has an automated screening warning. '
+                                'Confirm manual override and enter a justification reason before approving.'
+                            ),
+                            'code': 'override_required',
+                            'blocking_reasons': screening.get('blocking_reasons', []),
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                audit_reason = f"Manual override: {override_reason}"
+                audit_metadata = {
+                    'override_warning': True,
+                    'override_reason': override_reason,
+                    'primary_issue': screening.get('primary_issue'),
+                    'blocking_reasons': screening.get('blocking_reasons', []),
+                }
+
             document.verification_status = 'Verified'
             document.verifyBy = request.user
             document.rejection_reason = None
@@ -160,7 +189,8 @@ class AdminDocumentActionView(APIView):
                 target_user=document.user_profile,
                 previous_status=prev_status,
                 new_status='Verified',
-                reason=None,
+                reason=audit_reason,
+                metadata=audit_metadata,
                 request=request
             )
 
@@ -226,6 +256,8 @@ class AdminReprocessDocumentView(APIView):
 
     def post(self, request, document_id):
         document = get_object_or_404(tbl_documents, document_id=document_id)
+        if document.media_purged_at or not document.document_url:
+            return Response({'error': 'The original image has been removed under the retention policy. Please upload a new image before OCR reprocessing.'}, status=400)
         if document.document_type == 'profile_photo':
             return Response({'error': 'Profile photos are reviewed by an official, without OCR.'}, status=400)
         record_audit_log(

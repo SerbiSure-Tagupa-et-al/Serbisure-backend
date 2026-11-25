@@ -9,7 +9,7 @@ from rest_framework.exceptions import APIException
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from .models import tbl_user_profile
-from .profile_images import save_profile_image
+from .profile_images import AVATAR_EAGER_TRANSFORMATION, save_profile_image
 from .views import ProfileImageUploadView
 
 
@@ -19,7 +19,13 @@ class ProfileImageTests(SimpleTestCase):
         upload.return_value = {'public_id': 'serbisure_profiles/selfie'}
         user = SimpleNamespace(account_type='Admin', profile_link='old-image', save=Mock())
         timings = save_profile_image(user, 'image-file')
-        upload.assert_called_once_with('image-file', folder='serbisure_profiles/', type='authenticated')
+        upload.assert_called_once_with(
+            'image-file',
+            folder='serbisure_profiles/',
+            type='authenticated',
+            transformation=[{'width': 800, 'height': 800, 'crop': 'limit', 'quality': 'auto'}],
+            eager=AVATAR_EAGER_TRANSFORMATION,
+        )
         user.save.assert_called_once_with(update_fields=['profile_link'])
         self.assertEqual(user.profile_link, 'serbisure_profiles/selfie')
         self.assertEqual(set(timings), {'cloudinary', 'profile_save'})

@@ -73,7 +73,7 @@ class DocumentUploadTests(APITestCase):
         }
         response = self.client.post(self.upload_url, data, format='multipart')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("Kasambahay can only upload NBI or Police Clearances", str(response.data))
+        self.assertIn("Kasambahay can only upload NBI Clearance, Police Clearance, or TESDA NC II", str(response.data))
 
     def test_homeowner_cannot_upload_nbi(self):
         self.client.force_authenticate(user=self.homeowner)
