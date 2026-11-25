@@ -21,6 +21,7 @@ from verifications.services.groq_service import (
 )
 from verifications.services.matching_service import detect_discrepancies, normalize_document_names
 from verifications.services.document_fields import CORRECTIONS_KEY, merge_document_fields
+from verifications.services.document_screening import SCREENING_KEY, evaluate_document_screening
 
 logger = logging.getLogger(__name__)
 MAX_AUTOMATIC_RETRIES = 3
@@ -121,8 +122,9 @@ def _process_claimed_document(document):
     if not isinstance(extracted_data, dict):
         raise ValueError('Document extraction did not return an object')
 
-    # Provider output cannot mark itself as a human correction.
+    # Provider output cannot mark itself as a human correction or override screening metadata.
     extracted_data.pop(CORRECTIONS_KEY, None)
+    extracted_data.pop(SCREENING_KEY, None)
     extracted_data = normalize_document_names(extracted_data, raw_text)
     corrections = (document.extracted_data or {}).get(CORRECTIONS_KEY)
     if corrections:
@@ -132,6 +134,19 @@ def _process_claimed_document(document):
     match_score, discrepancies = detect_discrepancies(
         extracted_data, document.user_profile, document_type=document.document_type, raw_text=raw_text,
     )
+    screening_summary, _ = evaluate_document_screening(
+        document_type=document.document_type,
+        extracted_data=extracted_data,
+        raw_text=raw_text,
+        discrepancies=discrepancies,
+        valid_until=extracted_data.get('valid_until'),
+    )
+    # Keep raw Groq screening hints inside _screening so UI extracted-field tables stay clean.
+    extracted_data.pop('detected_document_type', None)
+    extracted_data.pop('suspicion_reason', None)
+    if screening_summary:
+        extracted_data[SCREENING_KEY] = screening_summary
+
     fields = {
         'ocr_raw_text': raw_text,
         'extracted_data': extracted_data,
@@ -163,11 +178,18 @@ def _process_claimed_document(document):
     if _owned_document(document).filter(verification_status='Pending').exists():
         try:
             display = dict(tbl_documents.DOCUMENT_CHOICES).get(document.document_type, document.document_type)
+            if screening_summary and screening_summary.get('has_blocking_flag'):
+                notif_msg = (
+                    f'Your {display} was checked and needs your attention. '
+                    'Open Document Verification to review the warning or upload a clearer/valid copy.'
+                )
+            else:
+                notif_msg = (
+                    f'Your {display} was analyzed and is currently under review by Barangay/Admin officials.'
+                )
             tbl_notification.objects.create(
                 sender_id=document.user_profile, receiver_id=document.user_profile,
-                notification_message=(
-                    f'Your {display} was analyzed and is currently under review by Barangay/Admin officials.'
-                ),
+                notification_message=notif_msg,
             )
         except Exception:
             logger.warning('Analysis notification failed for document %s', document.pk)

@@ -132,7 +132,13 @@ def extract_structured_data_from_text(raw_text: str, document_type: str) -> dict
     prompt = (
         f"Document Type: {document_type}\n\n"
         f"Raw OCR Extracted Text:\n```\n{raw_text}\n```\n\n"
-        "Extract all fields into a single JSON object."
+        "Extract all fields into a single JSON object. "
+        "Also include two screening keys in the same JSON object:\n"
+        "- \"detected_document_type\": what this text actually represents — one of "
+        "\"nbi_clearance\", \"police_clearance\", \"tesda_nc2\", \"national_id_front\", "
+        "\"national_id_back\", \"unrelated\", or \"unreadable\".\n"
+        "- \"suspicion_reason\": brief plain-English warning ONLY if the document appears unrelated, "
+        "fabricated, a sample/template, or missing official elements; otherwise null."
     )
 
     models_to_try = [

@@ -5,6 +5,7 @@ from rest_framework.exceptions import APIException
 
 from verifications.models import tbl_documents
 from verifications.services import document_processor
+from verifications.services.document_screening import document_has_stored_blocking_flag
 from accounts.workforce import document_is_expired
 
 
@@ -16,7 +17,10 @@ class DocumentAlreadySubmitted(APIException):
 def document_can_be_replaced(document):
     if document.document_type == 'profile_photo':
         return document.verification_status == 'Rejected'
-    # Pending submissions stay locked while officials review them.
+    # Clean Pending submissions stay locked while officials review them.
+    # Flagged Pending submissions (Option B: wrong/blurry/expired/suspicious) may be replaced right away.
+    if document.verification_status == 'Pending' and document_has_stored_blocking_flag(document):
+        return True
     return document.verification_status in ('Unverified', 'Rejected') or (
         document.verification_status == 'Verified' and document_is_expired(document)
     )

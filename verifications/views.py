@@ -230,6 +230,33 @@ class AdminVerificationReviewView(generics.GenericAPIView):
         prev_status = document.verification_status
 
         if action == 'approve':
+            from .services.document_screening import screening_for_document
+            screening = screening_for_document(document)
+            override_warning = bool(request.data.get('override_warning'))
+            override_reason = str(request.data.get('override_reason') or '').strip()
+            audit_reason = None
+            audit_metadata = None
+            if screening and screening.get('has_blocking_flag'):
+                if not override_warning or not override_reason:
+                    return Response(
+                        {
+                            'error': (
+                                'This document has an automated screening warning. '
+                                'Confirm manual override and enter a justification reason before approving.'
+                            ),
+                            'code': 'override_required',
+                            'blocking_reasons': screening.get('blocking_reasons', []),
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                audit_reason = f"Manual override: {override_reason}"
+                audit_metadata = {
+                    'override_warning': True,
+                    'override_reason': override_reason,
+                    'primary_issue': screening.get('primary_issue'),
+                    'blocking_reasons': screening.get('blocking_reasons', []),
+                }
+
             document.verification_status = 'Verified'
             document.rejection_reason = None
             if reviewer:
@@ -243,7 +270,8 @@ class AdminVerificationReviewView(generics.GenericAPIView):
                 target_user=user,
                 previous_status=prev_status,
                 new_status='Verified',
-                reason=None,
+                reason=audit_reason,
+                metadata=audit_metadata,
                 request=request
             )
 

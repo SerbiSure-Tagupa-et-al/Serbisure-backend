@@ -3,6 +3,7 @@ from datetime import date
 from difflib import SequenceMatcher
 
 from .document_fields import CORRECTIONS_KEY, NAME_FIELDS, NUMBER_KEYS
+from .document_screening import evaluate_document_screening
 
 
 _NAME_LABEL_TEXT = {
@@ -241,10 +242,33 @@ def detect_discrepancies(
         except ValueError:
             pass
 
+    # 6. Two-layer Philippine Document Authenticity & Quality Screening
+    screening_summary = None
+    if document_type and document_type != "profile_photo":
+        screening_summary, screening_flags = evaluate_document_screening(
+            document_type=document_type,
+            extracted_data=extracted_data,
+            raw_text=raw_text,
+            discrepancies=discrepancies,
+            valid_until=doc_valid_until,
+        )
+        existing_fields = {d.get("field") for d in discrepancies}
+        for flag in screening_flags:
+            if flag.get("field") not in existing_fields:
+                discrepancies.append(flag)
+                existing_fields.add(flag.get("field"))
+
     # Canonical persisted score: percentage 0..100. Missing evidence is not 50%.
     if field_scores:
         avg_score = sum(field_scores) / len(field_scores)
+        score = round(avg_score * 100, 2)
     else:
         return None, discrepancies
 
-    return round(avg_score * 100, 2), discrepancies
+    # Key integrity rule: wrong/unrelated/fabricated or unreadable documents must never score > 0%.
+    if screening_summary:
+        checks = screening_summary.get("checks") or {}
+        if checks.get("document_type_match") == "fail" or checks.get("image_clarity") == "fail":
+            score = 0.0
+
+    return score, discrepancies
