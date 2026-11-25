@@ -7,6 +7,7 @@ from reviews.models import tbl_review
 from django.db.models import Avg, Count, Q
 from core.utils import get_signed_cloudinary_url
 from .availability import post_status, schedule_expired
+from .geo import compute_proximity
 
 
 class BookingCancellationSerializer(serializers.Serializer):
@@ -201,6 +202,8 @@ class BookingFeedSerializer(PostStateSerializerMixin, serializers.ModelSerialize
     poster_account_type = serializers.SerializerMethodField()
     poster_verification_status = serializers.CharField(source='poster_id.verification_status', read_only=True)
     full_address = serializers.ReadOnlyField()
+    distance_km = serializers.SerializerMethodField()
+    proximity_label = serializers.SerializerMethodField()
 
     class Meta:
         model = tbl_booking
@@ -236,7 +239,28 @@ class BookingFeedSerializer(PostStateSerializerMixin, serializers.ModelSerialize
             'start_time',
             'end_time',
             'createdAt',
+            'distance_km',
+            'proximity_label',
         ]
+
+    def _get_proximity(self, obj):
+        if hasattr(obj, '_distance_km') or hasattr(obj, '_proximity_label'):
+            return getattr(obj, '_distance_km', None), getattr(obj, '_proximity_label', None)
+        request = self.context.get('request')
+        params = getattr(request, 'query_params', {}) if request else {}
+        user = getattr(request, 'user', None)
+        origin_barangay = params.get('origin_barangay') if params.get('origin_barangay') is not None else getattr(user, 'barangay', None)
+        origin_city = params.get('origin_city') if params.get('origin_city') is not None else getattr(user, 'city', None)
+        dist, label = compute_proximity(origin_barangay, origin_city, obj.barangay, obj.city)
+        obj._distance_km = dist
+        obj._proximity_label = label
+        return dist, label
+
+    def get_distance_km(self, obj):
+        return self._get_proximity(obj)[0]
+
+    def get_proximity_label(self, obj):
+        return self._get_proximity(obj)[1]
 
     def get_poster_account_type(self, obj):
         return getattr(obj.poster_id, 'account_type', 'User')

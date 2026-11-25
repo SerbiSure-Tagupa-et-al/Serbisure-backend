@@ -32,6 +32,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from uuid import UUID
 from .availability import available_public_posts, with_post_state
+from .geo import compute_proximity, normalize_barangay, normalize_city, resolve_coordinates
 from .serializers import ApplicationPostSerializer, RepostScheduleSerializer
 from .reposting import repost_public_post
 import math 
@@ -226,10 +227,71 @@ class BookingFeedView(generics.ListAPIView):
                 Q(poster_id__last_name__icontains=kw)
             )
 
-        # 6. Sorting
+        # 6. Proximity scope filtering & sorting (optional; omitted scope stays 'all' for compatibility)
         queryset = queryset.order_by('-createdAt', '-booking_id')
+        scope = (params.get('scope') or '').strip().lower()
+        sort_param = (params.get('sort') or 'newest').strip().lower()
+        origin_barangay = params.get('origin_barangay')
+        origin_city = params.get('origin_city')
+        if origin_barangay is None:
+            origin_barangay = getattr(current_user, 'barangay', '') or ''
+        if origin_city is None:
+            origin_city = getattr(current_user, 'city', '') or ''
 
-        return queryset
+        if scope not in ('same_barangay', 'radius', 'same_city') and sort_param != 'nearest':
+            return queryset
+
+        radius_km = 5.0
+        if params.get('radius_km'):
+            try:
+                parsed_radius = float(params.get('radius_km'))
+                if parsed_radius > 0:
+                    radius_km = parsed_radius
+            except (ValueError, TypeError):
+                pass
+
+        norm_origin_brgy = normalize_barangay(origin_barangay)
+        norm_origin_city = normalize_city(origin_city)
+        origin_coords = resolve_coordinates(origin_barangay, origin_city)
+
+        items = list(queryset)
+        filtered = []
+        for item in items:
+            dist, label = compute_proximity(origin_barangay, origin_city, item.barangay, item.city)
+            item._distance_km = dist
+            item._proximity_label = label
+            item_brgy = normalize_barangay(item.barangay)
+            item_city = normalize_city(item.city)
+
+            if scope == 'same_barangay':
+                if not norm_origin_brgy:
+                    continue
+                if item_brgy != norm_origin_brgy:
+                    continue
+                if norm_origin_city and item_city and item_city != norm_origin_city:
+                    continue
+            elif scope == 'same_city':
+                if norm_origin_city and item_city != norm_origin_city:
+                    continue
+            elif scope == 'radius':
+                if origin_coords is not None:
+                    if dist is None or dist > radius_km:
+                        continue
+                else:
+                    # Graceful fallback outside CDO / Misamis Oriental coordinate map.
+                    if norm_origin_city and item_city != norm_origin_city:
+                        continue
+            filtered.append(item)
+
+        if sort_param == 'nearest':
+            filtered.sort(
+                key=lambda item: (
+                    item._distance_km is None,
+                    item._distance_km if item._distance_km is not None else 999999.0,
+                    -(item.createdAt.timestamp() if item.createdAt else 0.0),
+                )
+            )
+        return filtered
 
 
 class PublicPendingPostsView(generics.ListAPIView):
