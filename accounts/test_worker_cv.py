@@ -14,6 +14,21 @@ from datetime import date
 
 
 class WorkerCvTests(APITestCase):
+    def test_expected_rate_caps_on_write_keep_legacy_profiles_readable(self):
+        from .worker_serializers import WorkerProfileSerializer
+        for field, limit in (('desired_daily_rate', '5000.00'), ('desired_monthly_rate', '50000.00')):
+            with self.subTest(field=field):
+                valid = WorkerProfileSerializer(self.details, data={field: limit}, partial=True)
+                self.assertTrue(valid.is_valid(), valid.errors)
+                invalid = WorkerProfileSerializer(self.details, data={field: str(Decimal(limit) + Decimal('.01'))}, partial=True)
+                self.assertFalse(invalid.is_valid())
+                self.assertIn(field, invalid.errors)
+        self.details.desired_daily_rate = Decimal('9000.00')
+        self.details.save(update_fields=['desired_daily_rate'])
+        self.assertEqual(WorkerProfileSerializer(self.details).data['desired_daily_rate'], '9000.00')
+        unrelated = WorkerProfileSerializer(self.details, data={'education': 'College'}, partial=True)
+        self.assertTrue(unrelated.is_valid(), unrelated.errors)
+
     def setUp(self):
         cache.clear()
         self.addCleanup(cache.clear)

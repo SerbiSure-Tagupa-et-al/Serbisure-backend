@@ -36,7 +36,7 @@ class BookingAddressRoundTripTests(APITestCase):
             for sender, recipient in ((owner, worker), (worker, owner)):
                 start = (timezone.now().astimezone(PH_TIME)+timedelta(days=2)).replace(hour=8, minute=0, second=0, microsecond=0)
                 payload = {**address, 'recipient_id': str(recipient.pk), 'booking_type': booking_type,
-                    'work_setup': 'stay_out', 'service_category': ['Cleaning'], 'rate_amount': '8000',
+                    'work_setup': 'stay_out', 'service_category': ['Cleaning'], 'rate_amount': '800' if booking_type == 'short_term' else '8000',
                     'rate_period': 'day' if booking_type == 'short_term' else 'month', 'start_time': start.isoformat(),
                     'end_time': (start+timedelta(days=30 if booking_type == 'long_term' else 0, hours=9)).isoformat(),
                     'daily_start_time': '08:00:00', 'daily_end_time': '17:00:00',

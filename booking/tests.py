@@ -511,7 +511,8 @@ class BookingMinimumWageEndpointTests(APITestCase):
         self.assertEqual(res.data['booking_type'], 'short_term')
         self.assertEqual(res.data['min_daily_rate'], '600.00')
         self.assertFalse(res.data['is_statutory_mandatory'])
-        self.assertIn('platform minimum', res.data['description'])
+        self.assertIn('Part-time / Daily', res.data['description'])
+        self.assertEqual(res.data['maximum_rate'], '5000.00')
 
 
 
