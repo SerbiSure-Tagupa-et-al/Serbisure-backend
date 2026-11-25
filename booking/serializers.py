@@ -1,10 +1,10 @@
 from rest_framework import serializers
 from .models import tbl_booking, tbl_booking_proposal, tbl_saved_post
-from .wage_policy import validate_rate, DOLE_CONTRACT_PDF_URL
+from .wage_policy import validate_rate, rate_period_for, DOLE_CONTRACT_PDF_URL
 from django.utils import timezone
 from .services import PH_TIME, validate_booking_duration
 from reviews.models import tbl_review
-from django.db.models import Avg
+from django.db.models import Avg, Count, Q
 from core.utils import get_signed_cloudinary_url
 from .availability import post_status, schedule_expired
 
@@ -149,9 +149,18 @@ class BookingSerializer(serializers.ModelSerializer):
         region = data.get('region', self.instance.region if self.instance else '')
         address = ' '.join(str(data.get(key, getattr(self.instance, key, '') if self.instance else '') or '')
                            for key in ('street', 'barangay', 'city', 'province', 'zip_code'))
-        validate_rate(amount, booking_type, region, address, period=data.get('rate_period'))
+        request = self.context.get('request')
+        poster = self.context.get('poster') or (request.user if request else getattr(self.instance, 'poster_id', None))
+        availability_post = self.context.get('availability_post', isinstance(self, PublicPostSerializer))
+        if availability_post and getattr(poster, 'account_type', None) == 'Kasambahay':
+            # New availability rows have no advertised price. Legacy rows are never rewritten.
+            data['rate_amount'] = None
+            if data.get('rate_period') != rate_period_for(booking_type):
+                raise serializers.ValidationError({'rate_period': 'Use day for Part-time / Daily or month for Full-time / Monthly.'})
+        else:
+            validate_rate(amount, booking_type, region, address, period=data.get('rate_period'))
         if data.get('rate_period') is None:
-            raise serializers.ValidationError({'rate_period': 'Specify day for short-term or month for long-term.'})
+            raise serializers.ValidationError({'rate_period': 'Use day for Part-time / Daily or month for Full-time / Monthly.'})
 
         validate_booking_duration(booking_type, start_time, end_time)
 
@@ -245,9 +254,13 @@ class BookingFeedSerializer(PostStateSerializerMixin, serializers.ModelSerialize
 
 class ApplicationPostSerializer(BookingFeedSerializer):
     application_status = serializers.SerializerMethodField()
+    application = serializers.SerializerMethodField()
 
     class Meta(BookingFeedSerializer.Meta):
-        fields = BookingFeedSerializer.Meta.fields + ['application_status']
+        fields = BookingFeedSerializer.Meta.fields + ['application_status', 'application']
+
+    def get_application(self, obj):
+        return BookingProposalSerializer(obj.viewer_application).data
 
     def get_application_status(self, obj):
         proposal = obj.viewer_application
@@ -278,6 +291,7 @@ class PublicPendingPostSerializer(BookingFeedSerializer):
 
 
 class BookingDetailSerializer(PostStateSerializerMixin, serializers.ModelSerializer):
+    poster_account_type = serializers.CharField(source='poster_id.account_type', read_only=True)
     pass_url = serializers.SerializerMethodField()
     schedule_expired = serializers.SerializerMethodField()
     post_status = serializers.SerializerMethodField()
@@ -295,6 +309,7 @@ class BookingDetailSerializer(PostStateSerializerMixin, serializers.ModelSeriali
         fields = [
             'booking_id',
             'pass_url',
+            'poster_account_type',
             'booking_type',
             'work_setup',
             'work_days',
@@ -361,7 +376,7 @@ class BookingDetailSerializer(PostStateSerializerMixin, serializers.ModelSeriali
             'work_days': obj.work_days,
             'daily_start_time': obj.daily_start_time.isoformat() if obj.daily_start_time else None,
             'daily_end_time': obj.daily_end_time.isoformat() if obj.daily_end_time else None,
-            'rate_amount': None if obj.rate_needs_review else str(obj.rate_amount),
+            'rate_amount': None if obj.rate_needs_review or obj.rate_amount is None else str(obj.rate_amount),
             'rate_needs_review': obj.rate_needs_review,
             'rate_period': obj.rate_period,
             'start_date': obj.start_time.isoformat(),
@@ -439,6 +454,12 @@ class BookingProposalSerializer(serializers.ModelSerializer):
     proposer_avatar = serializers.SerializerMethodField()
     proposer_rating = serializers.SerializerMethodField()
     rate_period = serializers.CharField(source='booking_id.rate_period', read_only=True)
+    is_budget_accepted = serializers.SerializerMethodField()
+    is_verified = serializers.SerializerMethodField()
+    has_tesda_nc2 = serializers.SerializerMethodField()
+    avg_rating = serializers.SerializerMethodField()
+    jobs_done_count = serializers.SerializerMethodField()
+    recommendation_pct = serializers.SerializerMethodField()
 
     class Meta:
         model = tbl_booking_proposal
@@ -450,6 +471,7 @@ class BookingProposalSerializer(serializers.ModelSerializer):
             'proposer_role',
             'proposer_avatar',
             'proposer_rating',
+            'is_verified', 'has_tesda_nc2', 'avg_rating', 'jobs_done_count', 'recommendation_pct', 'is_budget_accepted',
             'proposed_rate',
             'rate_period',
             'message',
@@ -471,8 +493,39 @@ class BookingProposalSerializer(serializers.ModelSerializer):
         return get_signed_avatar(obj.proposer_id)
 
     def get_proposer_rating(self, obj):
-        avg_rating = tbl_review.objects.filter(reviewee_id=obj.proposer_id).aggregate(avg=Avg('rating'))['avg']
-        return round(float(avg_rating), 1) if avg_rating is not None else 0.0
+        return self.get_avg_rating(obj) or 0.0
+
+    def get_is_budget_accepted(self, obj):
+        return obj.booking_id.rate_amount is not None and obj.proposed_rate == obj.booking_id.rate_amount
+
+    def get_is_verified(self, obj):
+        return obj.proposer_id.is_active and obj.proposer_id.verification_status == 'Verified'
+
+    def get_has_tesda_nc2(self, obj):
+        from verifications.models import tbl_documents
+        return tbl_documents.objects.filter(user_profile=obj.proposer_id, document_type='tesda_nc2', verification_status='Verified').filter(
+            Q(valid_until__isnull=True) | Q(valid_until__gte=timezone.localdate(timezone=PH_TIME))).exists()
+
+    def _stats(self, obj):
+        if not hasattr(self, '_bidder_stats'):
+            self._bidder_stats = {}
+        if obj.proposer_id_id not in self._bidder_stats:
+            self._bidder_stats[obj.proposer_id_id] = tbl_review.objects.filter(reviewee_id=obj.proposer_id).aggregate(
+                avg=Avg('rating'), recommended=Count('pk', filter=Q(would_recommend=True)),
+                answered=Count('pk', filter=Q(would_recommend__isnull=False)))
+        return self._bidder_stats[obj.proposer_id_id]
+
+    def get_avg_rating(self, obj):
+        value = self._stats(obj)['avg']
+        return round(float(value), 1) if value is not None else None
+
+    def get_jobs_done_count(self, obj):
+        return tbl_booking.objects.filter(booking_status='Completed').filter(
+            Q(poster_id=obj.proposer_id) | Q(assignments__accepter_id=obj.proposer_id)).distinct().count()
+
+    def get_recommendation_pct(self, obj):
+        stats = self._stats(obj)
+        return round(100 * stats['recommended'] / stats['answered'], 1) if stats['answered'] else None
 
 
 class SavedPostItemSerializer(serializers.ModelSerializer):

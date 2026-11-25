@@ -26,7 +26,7 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from notifications.services import send_in_app_notification
 from .wage_policy import get_minimum_wage_info, validate_rate
-from .services import accept_engagement, assert_no_pending_review, create_proposal, get_pending_mandatory_review
+from .services import PH_TIME, accept_engagement, assert_no_pending_review, create_proposal, get_pending_mandatory_review
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -569,6 +569,7 @@ class BookingProposalRespondView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def patch(self, request, proposal_id):
         try:
             proposal = tbl_booking_proposal.objects.select_related('booking_id', 'proposer_id').get(proposal_id=proposal_id)
@@ -576,6 +577,16 @@ class BookingProposalRespondView(APIView):
             return Response({'error': 'Proposal not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         booking = proposal.booking_id
+        action = request.data.get('action', '').strip().lower()
+        if action == 'withdraw':
+            if proposal.proposer_id_id != request.user.pk:
+                return Response({'error': 'Only the applicant can withdraw their own bid.'}, status=403)
+            tbl_booking.objects.select_for_update().get(pk=booking.pk)
+            if not tbl_booking_proposal.objects.filter(pk=proposal.pk, status='Pending').update(status='Withdrawn'):
+                raise ValidationError({'error': 'Only a pending bid can be withdrawn.'})
+            proposal.refresh_from_db()
+            publish([proposal.proposer_id_id, booking.poster_id_id], {'type': 'booking.changed', 'booking_id': str(booking.pk)})
+            return Response({'message': 'Bid withdrawn without a cancellation penalty.', 'proposal': BookingProposalSerializer(proposal).data})
         if booking.poster_id != request.user:
             return Response({'error': 'Only the booking creator can respond to proposals.'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -587,15 +598,25 @@ class BookingProposalRespondView(APIView):
             return Response({'error': f'Proposal has already been {proposal.status}.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if action == 'accept':
-            booking, accepter = accept_engagement(booking.pk, request.user, proposal.pk)
+            schedule_keys = ('start_time', 'end_time', 'daily_start_time', 'daily_end_time', 'work_days')
+            schedule = None
+            if any(key in request.data for key in schedule_keys):
+                schedule_serializer = RepostScheduleSerializer(data=request.data)
+                schedule_serializer.is_valid(raise_exception=True)
+                schedule = schedule_serializer.validated_data
+            booking, accepter = accept_engagement(booking.pk, request.user, proposal.pk, schedule=schedule)
             proposal.refresh_from_db()
 
             # Notify proposer
             poster_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
+            start_note = (
+                f" starting {booking.start_time.astimezone(PH_TIME).strftime('%b %d, %Y')}"
+                if schedule is not None and booking.start_time else ''
+            )
             send_in_app_notification(
                 receiver=proposal.proposer_id,
                 sender=request.user,
-                message=f"{poster_name} accepted your offer of P{proposal.proposed_rate}! The booking is now confirmed."
+                message=f"{poster_name} accepted your offer of ₱{proposal.proposed_rate:,.2f}{start_note}! The booking is now confirmed."
             )
 
             return Response({
@@ -706,7 +727,7 @@ class BookingRecommendationsView(APIView):
                     score += 25
 
                 # Fair rate bonus
-                if job.rate_amount >= Decimal('500.00'):
+                if job.rate_amount is not None and job.rate_amount >= Decimal('500.00'):
                     score += 10
 
                 from .serializers import get_signed_avatar
@@ -716,7 +737,7 @@ class BookingRecommendationsView(APIView):
                 scored_jobs.append({
                     'booking_id': str(job.booking_id),
                     'title': ", ".join(job.service_category) if isinstance(job.service_category, list) else str(job.service_category),
-                    'rate_amount': str(job.rate_amount),
+                    'rate_amount': str(job.rate_amount) if job.rate_amount is not None else None,
                     'rate_period': job.rate_period,
                     'location': display_loc,
                     'barangay': job.barangay,

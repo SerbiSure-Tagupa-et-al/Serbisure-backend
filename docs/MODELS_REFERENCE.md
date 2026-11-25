@@ -130,7 +130,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `user_profile` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `verifyBy` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
 | `document_type` | `CharField` | Choices: ['nbi_clearance', 'police_clearance', 'tesda_nc2', 'national_id_front', 'national_id_back', 'profile_photo'] |
-| `document_url` | `CharField` | - |
+| `document_url` | `CharField` | Blank=True |
+| `media_purged_at` | `DateTimeField` | Null=True, Blank=True |
 | `date_issued` | `DateField` | Null=True, Blank=True |
 | `valid_until` | `DateField` | Null=True, Blank=True |
 | `verification_status` | `CharField` | Choices: ['Unverified', 'Pending', 'Verified', 'Rejected'] |
@@ -204,7 +205,7 @@ This document outlines the database schema, models, field types, and choices (en
 | `floor_number` | `CharField` | Null=True, Blank=True |
 | `zip_code` | `CharField` | Null=True, Blank=True |
 | `special_instruction` | `TextField` | Null=True, Blank=True |
-| `rate_amount` | `DecimalField` | - |
+| `rate_amount` | `DecimalField` | Null=True, Blank=True |
 | `rate_period` | `CharField` | Choices: ['day', 'month'] |
 | `rate_needs_review` | `BooleanField` | - |
 | `started_at` | `DateTimeField` | Null=True, Blank=True |

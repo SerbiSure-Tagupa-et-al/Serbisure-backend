@@ -160,8 +160,8 @@ class tbl_booking(models.Model):
         validators=[
             MinValueValidator(Decimal('1.00'))
         ],
-        null=False,
-        blank=False
+        null=True,
+        blank=True
     )
 
     rate_period = models.CharField(max_length=5, choices=[('day', 'Day'), ('month', 'Month')])
@@ -226,7 +226,7 @@ class tbl_booking(models.Model):
             ),
             
             CheckConstraint(
-                condition=Q(rate_amount__gte=Decimal('1.00')),
+                condition=Q(rate_amount__isnull=True) | Q(rate_amount__gte=Decimal('1.00')),
                 name='valid_rate_amount'
             ),
             CheckConstraint(

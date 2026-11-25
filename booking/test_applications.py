@@ -165,6 +165,52 @@ class JobApplicationTests(APITestCase):
         self.assertFalse(tbl_booking_proposal.objects.exists())
         self.assertFalse(tbl_chat_message.objects.exists())
 
+    def test_hire_on_public_post_saves_chosen_schedule_and_rejects_invalid_dates(self):
+        # Simulate a public homeowner post that only stored daily hours and no calendar dates yet.
+        self.listing.work_days = []
+        self.listing.end_time = None
+        self.listing.save(update_fields=['work_days', 'end_time'])
+
+        application = self.client.post(self.url, {'proposed_rate': '750.00', 'rate_period': 'day', 'message': 'Ready!'}, format='json')
+        self.assertEqual(application.status_code, 201, application.data)
+        respond_url = reverse('booking-proposals-respond', kwargs={'proposal_id': application.data['proposal']['proposal_id']})
+
+        self.client.force_authenticate(self.owner)
+        # Past start date must be rejected cleanly.
+        past_start = timezone.now() - timedelta(days=1)
+        bad_resp = self.client.patch(respond_url, {
+            'action': 'accept',
+            'start_time': past_start.isoformat(),
+            'end_time': (past_start + timedelta(hours=5)).isoformat(),
+            'daily_start_time': '12:00:00',
+            'daily_end_time': '17:00:00',
+            'work_days': ['M', 'T', 'W', 'Th', 'F', 'S', 'Su'],
+        }, format='json')
+        self.assertEqual(bad_resp.status_code, 400)
+
+        # Valid future Philippine schedule succeeds and persists agreed calendar dates.
+        from .services import PH_TIME
+        future_date = (timezone.now().astimezone(PH_TIME) + timedelta(days=3)).date()
+        weekdays = ['M', 'T', 'W', 'Th', 'F', 'S', 'Su']
+        day_code = weekdays[future_date.weekday()]
+        start_dt = timezone.datetime(future_date.year, future_date.month, future_date.day, 12, 0, tzinfo=PH_TIME)
+        end_dt = timezone.datetime(future_date.year, future_date.month, future_date.day, 17, 0, tzinfo=PH_TIME)
+        ok_resp = self.client.patch(respond_url, {
+            'action': 'accept',
+            'start_time': start_dt.isoformat(),
+            'end_time': end_dt.isoformat(),
+            'daily_start_time': '12:00:00',
+            'daily_end_time': '17:00:00',
+            'work_days': [day_code],
+        }, format='json')
+        self.assertEqual(ok_resp.status_code, 200, ok_resp.data)
+        self.listing.refresh_from_db()
+        self.assertEqual(self.listing.booking_status, 'Accepted')
+        self.assertEqual(str(self.listing.rate_amount), '750.00')
+        self.assertEqual(self.listing.start_time, start_dt)
+        self.assertEqual(self.listing.end_time, end_dt)
+        self.assertEqual(self.listing.work_days, [day_code])
+
 
 class ConcurrentJobApplicationTests(BookingTransactionTestCase):
     def test_simultaneous_taps_create_one_application_and_one_message_pair(self):

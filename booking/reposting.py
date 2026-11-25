@@ -32,9 +32,11 @@ def repost_public_post(post_id, actor, schedule, key):
     fields = ('booking_type', 'work_setup', 'service_category', 'region', 'province', 'city', 'barangay',
               'street', 'floor_number', 'zip_code', 'special_instruction', 'rate_amount', 'rate_period')
     payload = {field: getattr(source, field) for field in fields}
+    if actor.account_type == 'Kasambahay':
+        payload['rate_amount'] = None
     payload.update(schedule)
     from .serializers import BookingSerializer
-    serializer = BookingSerializer(data=payload)
+    serializer = BookingSerializer(data=payload, context={'poster': actor, 'availability_post': True})
     # Older posts can have no recorded living setup. Preserve that value;
     # this endpoint only accepts a new schedule, never changed post details.
     if source.work_setup is None:
