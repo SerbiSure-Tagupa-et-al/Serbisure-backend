@@ -71,6 +71,15 @@ class Command(BaseCommand):
         summary = {'dry_run': options['dry_run'], 'retention_start_at': start.isoformat(),
                    'eligible_by_category': dict(eligible), 'purged_by_category': dict(purged),
                    'overdue_pending_flagged': overdue, 'skipped': skipped, 'errors': errors}
+        if not options['dry_run']:
+            tbl_audit_logs.objects.create(
+                action='UPDATED', actor_name='System / Automated', actor_role='System',
+                target_name='All Verification Media (RA 10173)', document_type='Retention Policy',
+                previous_status='Scheduled', new_status='Completed' if errors == 0 else 'Completed with Errors',
+                reason=f'Daily RA 10173 retention check: {sum(purged.values())} purged, '
+                       f'{skipped + sum(eligible.values())} checked, {overdue} overdue pending, {errors} errors.',
+                metadata={'reason_code': 'retention_cron_run', **{key: value for key, value in summary.items() if key != 'dry_run'}},
+            )
         self.stdout.write(json.dumps(summary, sort_keys=True))
         if errors:
             raise CommandError(f'{errors} image cleanup operation(s) failed; run again after resolving storage access.')

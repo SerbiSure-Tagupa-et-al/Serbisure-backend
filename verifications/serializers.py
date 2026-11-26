@@ -87,6 +87,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
     validUntil = serializers.DateField(source='valid_until', read_only=True)
     recordStatus = serializers.SerializerMethodField()
     documentImage = serializers.SerializerMethodField()
+    mediaPurgedAt = serializers.DateTimeField(source='media_purged_at', read_only=True, allow_null=True)
     documentImageBack = serializers.SerializerMethodField()
     rawDocumentType = serializers.CharField(source='document_type', read_only=True)
     barangay = serializers.SerializerMethodField()
@@ -105,6 +106,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
     packageLabel = serializers.SerializerMethodField()
     secondaryDocumentId = serializers.SerializerMethodField()
     secondaryDocumentImage = serializers.SerializerMethodField()
+    secondaryMediaPurgedAt = serializers.SerializerMethodField()
     secondaryDocumentType = serializers.SerializerMethodField()
     secondaryDocumentNumber = serializers.SerializerMethodField()
     secondaryIssuedDate = serializers.SerializerMethodField()
@@ -124,7 +126,8 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
             'role', 'avatar', 'documentType', 'rawDocumentType', 'documentNumber',
             'submittedDate', 'issuedDate', 'validityDate', 'status', 'primaryStatus', 'recordStatus',
             'applicantStatus', 'isExpired', 'validUntil',
-            'documentImage', 'documentImageBack', 'barangay', 'contactNumber', 'email', 'notes',
+            'documentImage', 'documentImageBack', 'mediaPurgedAt', 'secondaryMediaPurgedAt',
+            'barangay', 'contactNumber', 'email', 'notes',
             'faceLivenessMatchScore', 'ocrExtractedData', 'ocrDiscrepancies', 'ocrMatchScore', 'screening',
             'isPackage', 'packageLabel', 'secondaryDocumentId', 'secondaryDocumentImage', 'secondaryDocumentType',
             'secondaryDocumentNumber', 'secondaryIssuedDate', 'secondaryValidityDate',
@@ -367,7 +370,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
 
     def get_documentImage(self, obj):
         # Primary image
-        return self._sign_cloudinary_url(obj.document_url)
+        return None if obj.media_purged_at else self._sign_cloudinary_url(obj.document_url)
 
     def get_documentImageBack(self, obj):
         # Backward-compatible alias for secondary image
@@ -375,9 +378,13 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
 
     def get_secondaryDocumentImage(self, obj):
         companion = self._get_companion_doc(obj)
-        if companion:
+        if companion and not companion.media_purged_at:
             return self._sign_cloudinary_url(companion.document_url)
         return None
+
+    def get_secondaryMediaPurgedAt(self, obj):
+        companion = self._get_companion_doc(obj)
+        return serializers.DateTimeField().to_representation(companion.media_purged_at) if companion and companion.media_purged_at else None
 
     def get_secondaryDocumentType(self, obj):
         companion = self._get_companion_doc(obj)
