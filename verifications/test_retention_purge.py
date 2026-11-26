@@ -52,6 +52,75 @@ class RetentionPurgeTests(TestCase):
         self.assertTrue(doc.document_url)
         self.assertIsNone(doc.media_purged_at)
         self.assertEqual(Audit.objects.count(), before)
+        self.assertFalse(Audit.objects.filter(metadata__reason_code='retention_cron_run').exists())
+
+    def test_live_runs_record_one_summary_each_even_when_no_documents_are_due(self):
+        self.document(age=1)
+        for run in range(1, 3):
+            report = self.run_cleanup()
+            events = Audit.objects.filter(metadata__reason_code='retention_cron_run')
+            self.assertEqual(events.count(), run)
+            event = events.first()
+            self.assertEqual(event.action, 'UPDATED')
+            self.assertEqual(event.actor_name, 'System / Automated')
+            self.assertEqual(event.actor_role, 'System')
+            self.assertEqual(event.target_name, 'All Verification Media (RA 10173)')
+            self.assertEqual(event.document_type, 'Retention Policy')
+            self.assertEqual(event.previous_status, 'Scheduled')
+            self.assertEqual(event.new_status, 'Completed')
+            self.assertEqual(event.reason, 'Daily RA 10173 retention check: 0 purged, 1 checked, 0 overdue pending, 0 errors.')
+            self.assertEqual(event.metadata, {'reason_code': 'retention_cron_run', **{key: value for key, value in report.items() if key != 'dry_run'}})
+        self.destroy.assert_not_called()
+
+    def test_empty_database_live_run_still_records_a_zero_count_summary(self):
+        self.run_cleanup()
+        event = Audit.objects.get(metadata__reason_code='retention_cron_run')
+        self.assertEqual(event.metadata['eligible_by_category'], {})
+        self.assertEqual(event.metadata['purged_by_category'], {})
+        self.assertEqual(event.metadata['skipped'], 0)
+        self.assertEqual(event.metadata['errors'], 0)
+        self.assertEqual(event.reason, 'Daily RA 10173 retention check: 0 purged, 0 checked, 0 overdue pending, 0 errors.')
+
+    def test_live_summary_records_purged_skipped_and_overdue_counts(self):
+        self.document(status='Rejected', age=40)
+        self.document(kind='police_clearance', age=35)
+        report = self.run_cleanup()
+        event = Audit.objects.get(metadata__reason_code='retention_cron_run')
+        self.assertEqual(event.metadata['eligible_by_category'], {'rejected': 1})
+        self.assertEqual(event.metadata['purged_by_category'], {'rejected': 1})
+        self.assertEqual(event.metadata['overdue_pending_flagged'], 1)
+        self.assertEqual(event.metadata['skipped'], 1)
+        self.assertEqual(event.reason, 'Daily RA 10173 retention check: 1 purged, 2 checked, 1 overdue pending, 0 errors.')
+        self.assertEqual(event.metadata['retention_start_at'], report['retention_start_at'])
+
+    def test_queue_exposes_purge_dates_and_preserves_status_reviewer_and_dates(self):
+        reviewer = get_user_model().objects.create_user(username='purge-reviewer', email='purge-reviewer@test.com',
+            account_type='Admin', contact_number='+639333333333')
+        doc = self.document(status='Verified', age=40, verifyBy=reviewer,
+            date_issued=self.now.date() - timedelta(days=100), valid_until=self.now.date() + timedelta(days=100))
+        before = AdminVerificationQueueSerializer(doc).data
+        self.assertIsNone(before['mediaPurgedAt'])
+        self.assertIsNone(before['secondaryMediaPurgedAt'])
+        self.run_cleanup()
+        doc.refresh_from_db()
+        after = AdminVerificationQueueSerializer(doc).data
+        self.assertEqual(datetime.fromisoformat(after['mediaPurgedAt'].replace('Z', '+00:00')), self.now)
+        self.assertIsNone(after['documentImage'])
+        self.assertIsNone(after['secondaryDocumentImage'])
+        self.assertEqual(doc.verifyBy_id, reviewer.pk)
+        for field in ('status', 'primaryStatus', 'issuedDate', 'validityDate'):
+            self.assertEqual(after[field], before[field])
+
+    def test_companion_purge_timestamp_and_null_images_are_serialized_independently(self):
+        primary = self.document(kind='national_id_front', age=1)
+        companion = self.document(kind='national_id_back', age=1, media_purged_at=self.now)
+        with patch.object(AdminVerificationQueueSerializer, '_get_companion_doc', return_value=companion):
+            data = AdminVerificationQueueSerializer(primary).data
+        self.assertIsNone(data['mediaPurgedAt'])
+        self.assertTrue(data['documentImage'])
+        self.assertEqual(datetime.fromisoformat(data['secondaryMediaPurgedAt'].replace('Z', '+00:00')), self.now)
+        self.assertIsNone(data['secondaryDocumentImage'])
+        self.assertIsNone(data['documentImageBack'])
 
     def test_rejection_boundary_and_flags_do_not_extend_retention(self):
         old = self.document(status='Rejected', age=30, ocr_discrepancies=[{'field': 'image_quality', 'severity': 'high'}])
@@ -201,6 +270,12 @@ class RetentionPurgeTests(TestCase):
         self.assertTrue(doc.document_url)
         self.assertIsNone(doc.media_purged_at)
         self.assertFalse(Audit.objects.filter(metadata__reason_code='retention_media_purged').exists())
+        event = Audit.objects.get(metadata__reason_code='retention_cron_run')
+        self.assertEqual(event.new_status, 'Completed with Errors')
+        self.assertEqual(event.metadata['eligible_by_category'], {'rejected': 1})
+        self.assertEqual(event.metadata['purged_by_category'], {})
+        self.assertEqual(event.metadata['errors'], 1)
+        self.assertEqual(event.reason, 'Daily RA 10173 retention check: 0 purged, 1 checked, 0 overdue pending, 1 errors.')
 
     def test_shared_active_avatar_cannot_be_destroyed_by_another_document(self):
         doc = self.document(status='Rejected', age=40)
